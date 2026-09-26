@@ -825,10 +825,20 @@ describe("false-positive-resistant message policy", () => {
     expect(isStrongSpam({
       messageCount:1,
       repeatedCount:1,
-      mentions:10,
+      mentions:16,
       spamMessages:6,
       mentionLimit:8
     })).toBe(true);
+  });
+
+  it("does not timeout a borderline mass mention", () => {
+    expect(isStrongSpam({
+      messageCount:1,
+      repeatedCount:1,
+      mentions:12,
+      spamMessages:6,
+      mentionLimit:8
+    })).toBe(false);
   });
 
   it("does not punish a single message with the former mention threshold", () => {
