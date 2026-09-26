@@ -1,0 +1,31 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "discord-security",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": true,
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SECURITY_GATEWAY",
+        "class_name": "DiscordSecurityGateway"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "security-gateway-v1",
+      "new_sqlite_classes": ["DiscordSecurityGateway"]
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB"
+    }
+  ],
+  "triggers": {
+    "crons": ["* * * * *"]
+  }
+}
