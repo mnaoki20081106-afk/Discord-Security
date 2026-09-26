@@ -204,6 +204,120 @@ function settingsPatch(body: unknown): Partial<SecuritySettings> {
   return patch;
 }
 
+const BRIDGE_LOCKED_MODULES: Array<keyof SecuritySettings["modules"]> = [
+  "antiNuke",
+  "antiRaid",
+  "antiPhishing",
+  "dangerousAttachments",
+  "botGuard",
+  "webhookGuard",
+  "roleGuard",
+  "permissionGuard",
+  "automodGuard",
+  "guildGuard",
+  "memberGuard"
+];
+
+function retainExistingOnly(current: string[], requested: string[] | undefined): string[] {
+  if (!requested) return current;
+  const keep = new Set(requested);
+  return current.filter(value => keep.has(value));
+}
+
+export function applyBridgeSecurityFloor(
+  current: SecuritySettings,
+  requested: Partial<SecuritySettings>
+): Partial<SecuritySettings> {
+  const modules = {
+    ...current.modules,
+    ...(requested.modules ?? {})
+  };
+  for (const key of BRIDGE_LOCKED_MODULES) modules[key] = true;
+
+  const response = {
+    ...current.response,
+    ...(requested.response ?? {}),
+    stripDangerousRoles: true,
+    kickMaliciousBots: true,
+    autoLockdown: true,
+    deleteUnsafeMessages: true,
+    quarantineRaidJoins: true
+  };
+
+  const safety = {
+    ...current.safety,
+    ...(requested.safety ?? {}),
+    enforceExplicitContentFilter: true,
+    minimumVerificationLevel: Math.max(
+      2,
+      Number(requested.safety?.minimumVerificationLevel ??
+        current.safety.minimumVerificationLevel)
+    )
+  };
+
+  const thresholds = {
+    ...current.thresholds,
+    ...(requested.thresholds ?? {})
+  };
+  // Main may tune sensitivity, but cannot stretch the critical thresholds far
+  // enough to effectively disable the independent Security Worker.
+  thresholds.crossActionScore = Math.min(thresholds.crossActionScore, 20);
+  thresholds.channelDelete = Math.min(thresholds.channelDelete, 3);
+  thresholds.channelOverwrite = Math.min(thresholds.channelOverwrite, 6);
+  thresholds.roleDelete = Math.min(thresholds.roleDelete, 3);
+  thresholds.banAdd = Math.min(thresholds.banAdd, 10);
+  thresholds.memberPrune = Math.min(thresholds.memberPrune, 25);
+  thresholds.kick = Math.min(thresholds.kick, 10);
+  thresholds.webhook = Math.min(thresholds.webhook, 3);
+  thresholds.botAdd = 1;
+  thresholds.guildUpdate = Math.min(thresholds.guildUpdate, 3);
+  thresholds.automodChange = 1;
+  thresholds.raidJoins = Math.min(thresholds.raidJoins, 20);
+  thresholds.severeContentUsers = Math.min(thresholds.severeContentUsers, 6);
+  thresholds.actionWindowSeconds = Math.max(thresholds.actionWindowSeconds, 8);
+  thresholds.crossActionWindowSeconds = Math.max(
+    thresholds.crossActionWindowSeconds,
+    20
+  );
+  thresholds.raidWindowSeconds = Math.max(thresholds.raidWindowSeconds, 8);
+  thresholds.severeContentWindowSeconds = Math.max(
+    thresholds.severeContentWindowSeconds,
+    20
+  );
+
+  return {
+    ...requested,
+    enabled: true,
+    mode: "enforce",
+    modules,
+    response,
+    safety,
+    thresholds,
+    // Permanent actor/bot/domain bypasses must not be creatable by a Worker
+    // holding only the Main bridge secret. Existing exceptions can be removed.
+    trustedUserIds: retainExistingOnly(
+      current.trustedUserIds,
+      requested.trustedUserIds
+    ),
+    trustedRoleIds: retainExistingOnly(
+      current.trustedRoleIds,
+      requested.trustedRoleIds
+    ),
+    allowedBotIds: retainExistingOnly(
+      current.allowedBotIds,
+      requested.allowedBotIds
+    ),
+    allowedDomains: retainExistingOnly(
+      current.allowedDomains,
+      requested.allowedDomains
+    )
+  };
+}
+
+export function isManualDashboardLockdown(reason: string | null | undefined): boolean {
+  return reason === "manual dashboard lockdown";
+}
+
 async function handleInternal(
   request: Request,
   env: Env,
@@ -251,9 +365,24 @@ async function handleInternal(
       settings,
       status,
       incidents,
+      bridgeProtection: {
+        coreLocked: true,
+        exceptionAdditionsLocked: true,
+        automaticLockdownUnlockLocked: true
+      },
       lockdown: lockdown
-        ? { active: true, expiresAt: lockdown.expiresAt, reason: lockdown.reason }
-        : { active: false, expiresAt: null, reason: null }
+        ? {
+            active: true,
+            expiresAt: lockdown.expiresAt,
+            reason: lockdown.reason,
+            manualUnlockAllowed: isManualDashboardLockdown(lockdown.reason)
+          }
+        : {
+            active: false,
+            expiresAt: null,
+            reason: null,
+            manualUnlockAllowed: false
+          }
     });
   }
 
@@ -283,12 +412,14 @@ async function handleInternal(
   }
   if (settingsMatch && request.method === "PUT") {
     const body = bodyText ? JSON.parse(bodyText) : {};
+    const guildId = settingsMatch[1]!;
+    const current = await getSecuritySettings(env, guildId);
     const saved = await saveSecuritySettings(
       env,
-      settingsMatch[1]!,
-      settingsPatch(body)
+      guildId,
+      applyBridgeSecurityFloor(current, settingsPatch(body))
     );
-    await invalidateGatewaySettings(env, settingsMatch[1]!);
+    await invalidateGatewaySettings(env, guildId);
     return json(saved);
   }
 
@@ -329,17 +460,25 @@ async function handleInternal(
     const settings = await getSecuritySettings(env, lockdown[1]!);
     const body = bodyText ? JSON.parse(bodyText) as {
       minutes?: number;
-      reason?: string;
     } : {};
     const changed = await enterLockdown(
       env,
       lockdown[1]!,
       Number(body.minutes ?? settings.response.lockdownMinutes),
-      String(body.reason ?? "manual dashboard lockdown")
+      "manual dashboard lockdown"
     );
     return json({ ok: true, changed });
   }
   if (lockdown && request.method === "DELETE") {
+    const snapshot = await getLockdownSnapshot(env, lockdown[1]!);
+    if (snapshot && !isManualDashboardLockdown(snapshot.reason)) {
+      return json({
+        error: "automatic_lockdown_protected",
+        message:
+          "自動防御で発動したLockdownはMain Botから解除できません。期限切れの自動復旧を待つか、Security Worker側で対応してください。",
+        expiresAt: snapshot.expiresAt
+      }, 409);
+    }
     return json({
       ok: true,
       changed: await exitLockdown(env, lockdown[1]!)
