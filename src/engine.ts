@@ -203,8 +203,11 @@ export class SecurityEngine {
       };
       this.ownerCache.set(guildId, owner);
     }
-    if (owner.ownerId === actorId) return true;
-
+    // The guild owner is deliberately not fully trusted here. If the owner's
+    // account is compromised, destructive actions must still be able to
+    // trigger incident logging and server lockdown. Personal sanctions are
+    // skipped separately because Discord does not allow a bot to moderate
+    // the guild owner.
     if (settings.trustedRoleIds.length) {
       const member = await getMember(this.env, guildId, actorId);
       if (member?.roles?.some(role => settings.trustedRoleIds.includes(role))) {
@@ -225,6 +228,9 @@ export class SecurityEngine {
     this.sanctionCooldown.set(key, Date.now() + 30_000);
 
     if (settings.mode === "audit") return;
+
+    const ownerId = await getGuildOwnerId(this.env, guildId);
+    if (ownerId === actorId) return;
 
     const member = await getMember(this.env, guildId, actorId);
     if (member?.user?.bot) {
