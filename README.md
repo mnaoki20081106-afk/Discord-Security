@@ -164,7 +164,7 @@ Recommended server permissions (hardened minimum):
 
 Administrator is not required for the hardened-minimum mode. For **maximum protection**, Administrator is supported and the dashboard reports it as Maximum Protection because it prevents channel permission overwrites from locking the Security Bot out. This increases the impact of a leaked Security Bot token, so the Security token must remain isolated in the Security Worker secret store.
 
-**Role hierarchy matters:** the Security Bot role must be above the Main Bot and above every role it may need to strip or contain. The dashboard now diagnoses both permission readiness and Main/Security role ordering.
+**Role hierarchy matters:** human administrator roles are intentionally placed above every bot. Recommended order is **Human Administrators > Main Bot > Security Bot > third-party bots > ordinary roles**. Security never requires authority over those higher human operators: suspicious reversible administration is logged/notified without rollback or personal sanctions, while high-confidence destructive bursts can still trigger server Lockdown. Bots that Security must be able to kick or contain should remain below the Security Bot.
 
 ## Deployment
 
