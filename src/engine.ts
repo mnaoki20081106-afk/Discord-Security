@@ -86,6 +86,14 @@ const ACTION_SPECS: Record<number, ActionSpec> = {
   142: { key: "automod_change", threshold: "automodChange", weight: 11, module: "automodGuard", critical: true }
 };
 
+export function isSecurityBotSelfTarget(
+  env: Pick<Env, "DISCORD_APPLICATION_ID">,
+  targetId: string
+): boolean {
+  const applicationId = env.DISCORD_APPLICATION_ID?.trim();
+  return Boolean(applicationId && targetId === applicationId);
+}
+
 export function classifyAuditAction(actionType: number): string | null {
   return ACTION_SPECS[actionType]?.key ?? null;
 }
@@ -515,6 +523,7 @@ export class SecurityEngine {
       spec.key === "bot_add" &&
       entry.target_id &&
       (
+        isSecurityBotSelfTarget(this.env, entry.target_id) ||
         settings.allowedBotIds.includes(entry.target_id) ||
         entry.target_id === this.env.MAIN_BOT_APPLICATION_ID?.trim() ||
         await isManagedServiceBot(this.env, guildId, entry.target_id)
