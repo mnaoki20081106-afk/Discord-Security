@@ -22,6 +22,40 @@ type GatewayPayload = {
   d?: unknown;
 };
 
+export class OrderedTaskLanes {
+  private readonly lanes = new Map<string, Promise<void>>();
+
+  constructor(
+    private readonly onError: (label: string, error: unknown) => void =
+      (label, error) => console.error(label, error)
+  ) {}
+
+  enqueue(
+    lane: string,
+    label: string,
+    work: () => Promise<void>
+  ): void {
+    const previous = this.lanes.get(lane) ?? Promise.resolve();
+    const current = previous
+      .then(work)
+      .catch(error => this.onError(label, error));
+    this.lanes.set(lane, current);
+    void current.finally(() => {
+      if (this.lanes.get(lane) === current) {
+        this.lanes.delete(lane);
+      }
+    });
+  }
+
+  waitForLane(lane: string): Promise<void> {
+    return this.lanes.get(lane) ?? Promise.resolve();
+  }
+
+  pendingLaneCount(): number {
+    return this.lanes.size;
+  }
+}
+
 const STATE_KEY = "discord_security_gateway_state";
 const GATEWAY_VERSION = 10;
 const GUILDS = 1 << 0;
@@ -115,10 +149,11 @@ export class DiscordSecurityGateway {
   private socket: WebSocket | null = null;
   private plannedClose = false;
   // Protocol/control frames must never wait behind Discord REST moderation
-  // calls. queue handles WebSocket state/heartbeats; eventQueue preserves
-  // dispatch order for slower SecurityEngine work.
+  // calls. queue handles WebSocket state/heartbeats. Security work is ordered
+  // only within a guild+lane, so a message flood cannot block audit protection
+  // in the same or another guild.
   private queue: Promise<void> = Promise.resolve();
-  private eventQueue: Promise<void> = Promise.resolve();
+  private readonly eventLanes = new OrderedTaskLanes();
   private readonly engine: SecurityEngine;
 
   constructor(
@@ -419,12 +454,11 @@ export class DiscordSecurityGateway {
   }
 
   private enqueueSecurityEvent(
+    lane: string,
     label: string,
     work: () => Promise<void>
   ): void {
-    this.eventQueue = this.eventQueue
-      .then(work)
-      .catch(error => console.error(label, error));
+    this.eventLanes.enqueue(lane, label, work);
   }
 
   private async handleDispatch(
@@ -449,6 +483,7 @@ export class DiscordSecurityGateway {
       await this.saveState(stored);
       for (const guildId of stored.guildIds) {
         this.enqueueSecurityEvent(
+          "audit:" + guildId,
           "initial audit reconcile failed " + guildId,
           () => this.engine.reconcileGuild(guildId)
         );
@@ -467,6 +502,7 @@ export class DiscordSecurityGateway {
         stored.guildIds.push(guildId);
         await this.saveState(stored);
         this.enqueueSecurityEvent(
+          "audit:" + guildId,
           "guild create audit reconcile failed " + guildId,
           () => this.engine.reconcileGuild(guildId)
         );
@@ -484,6 +520,7 @@ export class DiscordSecurityGateway {
     if (payload.t === "GUILD_AUDIT_LOG_ENTRY_CREATE") {
       const entry = payload.d as AuditEntry;
       this.enqueueSecurityEvent(
+        "audit:" + String(entry.guild_id || "unknown"),
         "security audit event failed",
         () => this.engine.handleAudit(entry)
       );
@@ -492,6 +529,7 @@ export class DiscordSecurityGateway {
     if (payload.t === "GUILD_MEMBER_ADD") {
       const event = payload.d as DiscordMemberAddEvent;
       this.enqueueSecurityEvent(
+        "member:" + event.guild_id,
         "security member event failed",
         () => this.engine.handleJoin(event)
       );
@@ -500,6 +538,7 @@ export class DiscordSecurityGateway {
     if (payload.t === "MESSAGE_CREATE") {
       const event = payload.d as DiscordMessageEvent;
       this.enqueueSecurityEvent(
+        "message:" + String(event.guild_id || "dm"),
         "security message event failed",
         () => this.engine.handleMessage(event)
       );
