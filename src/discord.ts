@@ -7,6 +7,7 @@ import type {
 import {
   deleteLockdownSnapshot,
   getLockdownSnapshot,
+  getSecuritySettings,
   putLockdownSnapshot
 } from "./db";
 
@@ -483,13 +484,29 @@ const LOCKDOWN_DENY =
   CREATE_PRIVATE_THREADS |
   SEND_MESSAGES_IN_THREADS;
 
+type LockdownBypass = {
+  roleIds?: Iterable<string>;
+  memberIds?: Iterable<string>;
+};
+
 export function buildLockdownOverwrites(
   guildId: string,
-  current: DiscordOverwrite[]
+  current: DiscordOverwrite[],
+  bypass: LockdownBypass = {}
 ): DiscordOverwrite[] {
+  const bypassRoles = new Set(bypass.roleIds ?? []);
+  const bypassMembers = new Set(bypass.memberIds ?? []);
+
   const next = current.map(item => {
-    const allow = BigInt(item.allow || "0") & ~LOCKDOWN_DENY;
-    const deny = BigInt(item.deny || "0") | LOCKDOWN_DENY;
+    const isBypass =
+      (item.type === 0 && bypassRoles.has(item.id)) ||
+      (item.type === 1 && bypassMembers.has(item.id));
+    const allow = isBypass
+      ? BigInt(item.allow || "0") | LOCKDOWN_DENY
+      : BigInt(item.allow || "0") & ~LOCKDOWN_DENY;
+    const deny = isBypass
+      ? BigInt(item.deny || "0") & ~LOCKDOWN_DENY
+      : BigInt(item.deny || "0") | LOCKDOWN_DENY;
     return {
       id: item.id,
       type: item.type,
@@ -505,6 +522,29 @@ export function buildLockdownOverwrites(
       allow: "0",
       deny: LOCKDOWN_DENY.toString()
     });
+  }
+
+  for (const roleId of bypassRoles) {
+    if (!roleId || roleId === guildId) continue;
+    if (!next.some(item => item.id === roleId && item.type === 0)) {
+      next.push({
+        id: roleId,
+        type: 0,
+        allow: LOCKDOWN_DENY.toString(),
+        deny: "0"
+      });
+    }
+  }
+  for (const memberId of bypassMembers) {
+    if (!memberId) continue;
+    if (!next.some(item => item.id === memberId && item.type === 1)) {
+      next.push({
+        id: memberId,
+        type: 1,
+        allow: LOCKDOWN_DENY.toString(),
+        deny: "0"
+      });
+    }
   }
   return next;
 }
@@ -546,10 +586,37 @@ export async function enterLockdown(
   const existing = await getLockdownSnapshot(env, guildId);
   if (existing) return false;
 
-  const channels = await botJson<DiscordChannel[]>(
-    env,
-    `/guilds/${guildId}/channels`
-  );
+  const [channels, settings, roles, self, ownerId] = await Promise.all([
+    botJson<DiscordChannel[]>(env, `/guilds/${guildId}/channels`),
+    getSecuritySettings(env, guildId),
+    botJson<DiscordRole[]>(env, `/guilds/${guildId}/roles`).catch(() => []),
+    getMember(env, guildId, env.DISCORD_APPLICATION_ID),
+    getGuildOwnerId(env, guildId)
+  ]);
+
+  const selfHighest = highestMemberRole(self, roles);
+  const operatorRoleIds = new Set(settings.trustedRoleIds);
+  if (selfHighest) {
+    for (const role of roles) {
+      if (
+        role.id !== guildId &&
+        !role.managed &&
+        containsDangerousPermission(role.permissions) &&
+        roleIsStrictlyAbove(role, selfHighest)
+      ) {
+        // Human privileged roles intentionally placed above Security Bot are
+        // outside the bot's moderation hierarchy. Keep them usable as emergency
+        // operators instead of silencing the people who must recover the guild.
+        operatorRoleIds.add(role.id);
+      }
+    }
+  }
+
+  const operatorMemberIds = new Set(settings.trustedUserIds);
+  if (ownerId) operatorMemberIds.add(ownerId);
+  if (env.DISCORD_APPLICATION_ID?.trim()) {
+    operatorMemberIds.add(env.DISCORD_APPLICATION_ID.trim());
+  }
   const categories = new Map(
     channels
       .filter(channel => channel.type === 4)
@@ -589,7 +656,11 @@ export async function enterLockdown(
     for (const item of snapshot) {
       const permissionOverwrites = buildLockdownOverwrites(
         guildId,
-        item.permissionOverwrites
+        item.permissionOverwrites,
+        {
+          roleIds: operatorRoleIds,
+          memberIds: operatorMemberIds
+        }
       );
       try {
         await patchChannelOverwrites(
