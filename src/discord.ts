@@ -251,6 +251,13 @@ function memberBasePermissions(
   return permissions;
 }
 
+export function roleIsStrictlyAbove(
+  upper: { position?: number },
+  lower: { position?: number }
+): boolean {
+  return Number(upper.position ?? 0) > Number(lower.position ?? 0);
+}
+
 function highestMemberRole(
   member: DiscordMember | null,
   roles: DiscordRole[]
@@ -284,6 +291,8 @@ export async function getSecurityCapabilities(
       requiredReady: false,
       maximumProtection: false,
       roleAboveManagedBots: null,
+      roleAboveDangerousRoles: null,
+      dangerousRolesNotBelow: [],
       highestRoleName: null,
       highestRolePosition: null,
       missingPermissions: CAPABILITY_PERMISSIONS.map(([name]) => name)
@@ -308,25 +317,41 @@ export async function getSecurityCapabilities(
 
   let roleAboveManagedBots: boolean | null = null;
   if (installedManagedHighest.length && selfHighest) {
-    const selfPosition = Number(selfHighest.position ?? 0);
-    roleAboveManagedBots = installedManagedHighest.every(role => {
-      const otherPosition = Number(role.position ?? 0);
-      if (selfPosition !== otherPosition) return selfPosition > otherPosition;
-      try {
-        return BigInt(selfHighest.id) < BigInt(role.id);
-      } catch {
-        return false;
-      }
-    });
+    roleAboveManagedBots = installedManagedHighest.every(role =>
+      roleIsStrictlyAbove(selfHighest, role)
+    );
   }
+
+  const selfRoleIds = new Set(self.roles ?? []);
+  const dangerousRoles = roles.filter(role =>
+    !selfRoleIds.has(role.id) &&
+    containsDangerousPermission(role.permissions)
+  );
+  const dangerousRolesNotBelow = dangerousRoles
+    .filter(role => !selfHighest || !roleIsStrictlyAbove(selfHighest, role))
+    .map(role => ({
+      id: role.id,
+      name: role.name ?? role.id,
+      position: Number(role.position ?? 0)
+    }))
+    .sort((a, b) => b.position - a.position)
+    .slice(0, 20);
+  const roleAboveDangerousRoles = selfHighest
+    ? dangerousRolesNotBelow.length === 0
+    : null;
+  const hierarchyReady =
+    roleAboveManagedBots !== false &&
+    roleAboveDangerousRoles !== false;
 
   return {
     administrator,
-    requiredReady: missingPermissions.length === 0,
-    // Administrator bypasses channel permission overwrites, which is the
-    // strongest survivability mode when a hostile moderator edits channels.
-    maximumProtection: administrator,
+    requiredReady: missingPermissions.length === 0 && hierarchyReady,
+    // Administrator bypasses channel permission overwrites, but Discord's
+    // member/role hierarchy still applies to moderation and role management.
+    maximumProtection: administrator && hierarchyReady,
     roleAboveManagedBots,
+    roleAboveDangerousRoles,
+    dangerousRolesNotBelow,
     highestRoleName: selfHighest?.name ?? null,
     highestRolePosition: selfHighest?.position ?? null,
     missingPermissions

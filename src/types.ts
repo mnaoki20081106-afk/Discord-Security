@@ -113,6 +113,12 @@ export type SecurityCapabilities = {
   requiredReady: boolean;
   maximumProtection: boolean;
   roleAboveManagedBots: boolean | null;
+  roleAboveDangerousRoles: boolean | null;
+  dangerousRolesNotBelow: Array<{
+    id: string;
+    name: string;
+    position: number;
+  }>;
   highestRoleName: string | null;
   highestRolePosition: number | null;
   missingPermissions: string[];
