@@ -114,19 +114,26 @@ export function auditContainmentDecision(input: {
     input.action==="member_prune" &&
     input.pruneMembers>=threshold;
 
+  const repeatedSecurityTamper=
+    input.securitySelfOverwrite && input.count>=3;
+  const repeatedRiskyBotAdd=
+    input.highRiskBotAdd && input.count>=2;
+  const repeatedSelfPrivilegeGrant=
+    input.selfPrivilegeGrant && input.count>=3;
+
   const contain=
-    input.securitySelfOverwrite ||
-    input.highRiskBotAdd ||
-    input.selfPrivilegeGrant ||
+    repeatedSecurityTamper ||
+    repeatedRiskyBotAdd ||
+    repeatedSelfPrivilegeGrant ||
     pruneBurst ||
     destructiveBurst ||
     mixedDestructiveBurst ||
     nonDestructiveBurst;
 
-  // First-time privilege grants / privileged bot installs receive targeted
-  // rollback only. Global lockdown requires a destructive or repeated pattern.
+  // Ambiguous single events never cause a global lockdown. Lockdown requires
+  // repeated Security tampering or confirmed destructive/repetitive activity.
   const lockdown=
-    input.securitySelfOverwrite ||
+    repeatedSecurityTamper ||
     pruneBurst ||
     destructiveBurst ||
     mixedDestructiveBurst ||
@@ -788,7 +795,34 @@ export class SecurityEngine {
       selfPrivilegeGrant
     });
 
-    if (!decision.contain) return;
+    if (!decision.contain) {
+      if(
+        securitySelfOverwrite ||
+        highRiskBotAdd ||
+        selfPrivilegeGrant ||
+        permissionChange.escalation
+      ){
+        await recordIncident(this.env,{
+          guildId,
+          actorId,
+          kind:"security_review",
+          severity:"medium",
+          summary:"重要な管理操作を記録しました（証拠不足のため自動処置なし）",
+          data:{
+            auditEntryId:entry.id,
+            actionType:entry.action_type,
+            targetId:entry.target_id??null,
+            actionCount:count,
+            crossActionScore:profile.score,
+            securitySelfOverwrite,
+            highRiskBotAdd,
+            selfPrivilegeGrant,
+            permissionEscalation:permissionChange.escalation
+          }
+        });
+      }
+      return;
+    }
 
     // Targeted remediation only happens after the high-confidence gate.
     if (
