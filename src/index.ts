@@ -42,6 +42,15 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
+export function isConfiguredMainBot(
+  env: Pick<Env, "MAIN_BOT_APPLICATION_ID">,
+  candidateId: string
+): boolean {
+  const expected = String(env.MAIN_BOT_APPLICATION_ID ?? "").trim();
+  return /^\d+$/.test(expected) && candidateId === expected;
+}
+
+
 function hex(bytes: ArrayBuffer): string {
   return [...new Uint8Array(bytes)]
     .map(value => value.toString(16).padStart(2, "0"))
@@ -253,11 +262,17 @@ async function handleInternal(
     const body = bodyText ? JSON.parse(bodyText) as { botId?: string; kind?: string } : {};
     const botId = String(body.botId ?? "");
     if (!/^\d+$/.test(botId)) return json({ error: "invalid_bot_id" }, 400);
+    if (!env.MAIN_BOT_APPLICATION_ID?.trim()) {
+      return json({ error: "main_bot_not_configured" }, 503);
+    }
+    if (!isConfiguredMainBot(env, botId)) {
+      return json({ error: "service_bot_not_allowed" }, 403);
+    }
     await registerManagedServiceBot(
       env,
       serviceBots[1]!,
       botId,
-      String(body.kind ?? "main")
+      "main"
     );
     return json({ ok: true }, 201);
   }
@@ -289,6 +304,12 @@ async function handleInternal(
     const actorId = String(body.actorId ?? "");
     const scope = body.scope;
     if (!/^\d+$/.test(actorId)) return json({ error: "invalid_actor" }, 400);
+    if (!env.MAIN_BOT_APPLICATION_ID?.trim()) {
+      return json({ error: "main_bot_not_configured" }, 503);
+    }
+    if (!isConfiguredMainBot(env, actorId)) {
+      return json({ error: "maintenance_actor_not_allowed" }, 403);
+    }
     if (!["dashboard_edit", "restore"].includes(String(scope))) {
       return json({ error: "invalid_scope" }, 400);
     }
