@@ -202,8 +202,10 @@ export function isHierarchyRelevantDangerousRole(
   selfRoleIds: ReadonlySet<string>
 ): boolean {
   // Managed bot/integration roles cannot be stripped by Security and should not
-  // force Security above every service bot. Only human-editable dangerous roles
-  // participate in the containment hierarchy requirement.
+  // force Security above every service bot. Human-editable dangerous roles are
+  // still reported for hierarchy diagnostics, but roles intentionally placed
+  // above Security are treated as human-operator territory rather than a
+  // readiness failure.
   return (
     !role.managed &&
     !selfRoleIds.has(role.id) &&
@@ -304,6 +306,36 @@ function highestMemberRole(
     })[0] ?? null;
 }
 
+export function humanMemberOutranksSecurity(
+  member: DiscordMember | null,
+  securityMember: DiscordMember | null,
+  roles: DiscordRole[]
+): boolean {
+  if (!member || member.user?.bot || !securityMember) return false;
+  const humanHighest = highestMemberRole(member, roles);
+  const securityHighest = highestMemberRole(securityMember, roles);
+  return Boolean(
+    humanHighest &&
+    securityHighest &&
+    roleIsStrictlyAbove(humanHighest, securityHighest)
+  );
+}
+
+export async function humanMemberOutranksSecurityById(
+  env: Env,
+  guildId: string,
+  userId: string
+): Promise<boolean | null> {
+  const [roles, securityMember, member] = await Promise.all([
+    botJson<DiscordRole[]>(env, `/guilds/${guildId}/roles`).catch(() => []),
+    getMember(env, guildId, env.DISCORD_APPLICATION_ID),
+    getMember(env, guildId, userId)
+  ]);
+  if (!roles.length || !securityMember || !member) return null;
+  if (member.user?.bot) return false;
+  return humanMemberOutranksSecurity(member, securityMember, roles);
+}
+
 export async function getSecurityCapabilities(
   env: Env,
   guildId: string,
@@ -366,19 +398,19 @@ export async function getSecurityCapabilities(
   const roleAboveDangerousRoles = selfHighest
     ? dangerousRolesNotBelow.length === 0
     : null;
-  // Managed bot/integration roles are intentionally not a readiness gate.
-  // They cannot be stripped like ordinary roles, and requiring Security above
-  // every service bot creates an unnecessary top-role conflict with Main Bot.
-  // Security still must be above dangerous human-editable roles that it may
-  // need to strip during containment.
-  const hierarchyReady = roleAboveDangerousRoles !== false;
+  // Role hierarchy is deliberately not a readiness gate. Human administrators
+  // are expected to sit above every bot. Security protects the server below its
+  // own hierarchy boundary and never requires authority over those operators.
+  // The diagnostic fields are retained so the dashboard can explain which roles
+  // are intentionally outside Security's automatic moderation boundary.
 
   return {
     administrator,
-    requiredReady: missingPermissions.length === 0 && hierarchyReady,
-    // Administrator bypasses channel permission overwrites, but Discord's
-    // member/role hierarchy still applies to human-editable role management.
-    maximumProtection: administrator && hierarchyReady,
+    requiredReady: missingPermissions.length === 0,
+    // "Maximum" means the Security Bot itself has Administrator and therefore
+    // cannot be channel-overwrite locked out. It still does not outrank human
+    // administrators by design.
+    maximumProtection: administrator,
     roleAboveManagedBots,
     roleAboveDangerousRoles,
     dangerousRolesNotBelow,
