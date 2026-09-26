@@ -168,13 +168,31 @@ Administrator is not required for the hardened-minimum mode. For **maximum prote
 
 ## Deployment
 
-Cloudflare Worker configuration is in `wrangler.jsonc`.
+Cloudflare Worker configuration is in `wrangler.jsonc`. The repository intentionally does **not** commit a production D1 UUID. Cloudflare requires both a D1 database name and database ID for production bindings. The manual **Deploy Security Worker** GitHub Actions workflow injects them into a temporary deployment config.
+
+Before the first production deployment:
+
+1. Create a D1 database, for example `discord-security`.
+2. Add GitHub Actions repository variables:
+   - `SECURITY_D1_DATABASE_ID`
+   - `SECURITY_D1_DATABASE_NAME` (optional; defaults to `discord-security`)
+3. Add GitHub Actions secrets:
+   - `CLOUDFLARE_API_TOKEN`
+   - `CLOUDFLARE_ACCOUNT_ID`
+   - `SECURITY_DISCORD_BOT_TOKEN`
+   - `SECURITY_DISCORD_APPLICATION_ID`
+   - `MAIN_BOT_APPLICATION_ID`
+   - `SECURITY_BRIDGE_SECRET`
+4. Run **Deploy Security Worker** manually and enter `DEPLOY`.
+
+The workflow re-runs dependency audit, typecheck and tests, renders the production D1 binding without committing the UUID, deploys the Worker, applies the four Worker secrets, and verifies their names exist.
+
+For local-only validation:
 
 ```bash
 npm install
 npm run typecheck
 npm test
-npx wrangler deploy
 ```
 
 The Worker uses:
