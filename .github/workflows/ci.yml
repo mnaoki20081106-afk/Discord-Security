@@ -13,8 +13,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Use npm with fixed peer resolver
-        run: npm install --global npm@11.20.0
       - run: npm install
       - name: Dependency security audit
         run: npm audit --audit-level=moderate
