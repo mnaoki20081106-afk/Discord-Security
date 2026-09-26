@@ -36,6 +36,7 @@ export type SecurityThresholds = {
   raidWindowSeconds: number;
   spamMessages: number;
   spamWindowSeconds: number;
+  mentionLimit: number;
   linkBurst: number;
   linkWindowSeconds: number;
   minAccountAgeHours: number;
