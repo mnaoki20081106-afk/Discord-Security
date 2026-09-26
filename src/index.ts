@@ -213,6 +213,9 @@ async function handleInternal(
       inviteUrl:
         `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(env.DISCORD_APPLICATION_ID)}` +
         `&permissions=${permissions}&integration_type=0&scope=bot%20applications.commands`,
+      maximumInviteUrl:
+        `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(env.DISCORD_APPLICATION_ID)}` +
+        `&permissions=8&integration_type=0&scope=bot%20applications.commands`,
       settings,
       status,
       incidents,
