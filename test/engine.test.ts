@@ -9,6 +9,7 @@ import {
   isStrongSpam,
   raidConfidence,
   scoreUrl,
+  shouldAutoSanctionActor,
   shouldSanctionActor
 } from "../src/engine";
 import { OrderedTaskLanes } from "../src/gateway";
@@ -647,6 +648,65 @@ describe("audit entry time", () => {
     const snowflake = ((BigInt(actionAt - 1420070400000) << 22n) + 7n).toString();
     expect(auditEntryCreatedAt(snowflake)).toBe(actionAt);
     expect(auditEntryCreatedAt("not-a-snowflake")).toBeNull();
+  });
+});
+
+describe("actor auto-sanction confidence", () => {
+  it("does not punish ordinary destructive admin bursts", () => {
+    expect(shouldAutoSanctionActor({
+      action:"channel_delete",
+      count:5,
+      thresholdValue:2,
+      crossActionScore:35,
+      crossActionThreshold:12,
+      destructiveKinds:1
+    })).toBe(false);
+    expect(shouldAutoSanctionActor({
+      action:"kick",
+      count:8,
+      thresholdValue:5,
+      crossActionScore:32,
+      crossActionThreshold:12,
+      destructiveKinds:1
+    })).toBe(false);
+  });
+
+  it("actor sanctions require extreme evidence", () => {
+    expect(shouldAutoSanctionActor({
+      action:"channel_delete",
+      count:10,
+      thresholdValue:2,
+      crossActionScore:70,
+      crossActionThreshold:12,
+      destructiveKinds:1
+    })).toBe(true);
+    expect(shouldAutoSanctionActor({
+      action:"role_delete",
+      count:1,
+      thresholdValue:2,
+      crossActionScore:30,
+      crossActionThreshold:12,
+      destructiveKinds:3
+    })).toBe(true);
+  });
+
+  it("never auto-sanctions actors for reversible configuration changes", () => {
+    expect(shouldAutoSanctionActor({
+      action:"channel_overwrite",
+      count:100,
+      thresholdValue:4,
+      crossActionScore:100,
+      crossActionThreshold:12,
+      destructiveKinds:3
+    })).toBe(false);
+    expect(shouldAutoSanctionActor({
+      action:"permission_escalation",
+      count:100,
+      thresholdValue:1,
+      crossActionScore:100,
+      crossActionThreshold:12,
+      destructiveKinds:3
+    })).toBe(false);
   });
 });
 
