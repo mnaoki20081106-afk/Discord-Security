@@ -266,7 +266,10 @@ export class SecurityEngine {
     spec: ActionSpec,
     detail: Record<string, unknown>
   ): Promise<void> {
-    const summary = `${spec.key} の異常操作を検知し、実行者を隔離しました`;
+    const enforcing = settings.mode === "enforce";
+    const summary = enforcing
+      ? `${spec.key} の異常操作を検知し、実行者を隔離しました`
+      : `${spec.key} の異常操作を検知しました（Audit only・自動処置なし）`;
     await recordIncident(this.env, {
       guildId,
       actorId,
@@ -282,7 +285,9 @@ export class SecurityEngine {
       settings,
       "Security Incident",
       `<@${actorId}> の **${spec.key}** を検知しました。\n` +
-      "危険権限の剥奪・隔離・Lockdownを安全設定に従って実行します。",
+      (enforcing
+        ? "危険権限の剥奪・隔離・Lockdownを安全設定に従って実行します。"
+        : "Audit onlyのため記録のみ行い、自動処置は実行しません。"),
       true
     );
 
@@ -403,7 +408,12 @@ export class SecurityEngine {
       }
     }
 
-    if (spec.key === "bot_add" && entry.target_id && settings.mode === "enforce") {
+    if (
+      spec.key === "bot_add" &&
+      entry.target_id &&
+      settings.mode === "enforce" &&
+      settings.response.kickMaliciousBots
+    ) {
       await kickMember(
         this.env,
         guildId,
