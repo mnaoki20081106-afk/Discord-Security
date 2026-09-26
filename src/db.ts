@@ -107,10 +107,12 @@ export const DEFAULT_SETTINGS: SecuritySettings = {
     channelDelete: 2,
     channelCreate: 6,
     channelUpdate: 5,
+    channelOverwrite: 4,
     roleDelete: 2,
     roleCreate: 6,
     roleUpdate: 4,
     banAdd: 4,
+    memberPrune: 10,
     kick: 5,
     webhook: 2,
     botAdd: 1,
@@ -302,9 +304,9 @@ export async function hasMaintenanceLease(
     if (row.scope === "all" || row.scope === "restore") return true;
     if (
       row.scope === "dashboard_edit" &&
-      ["channel_create", "channel_update", "channel_delete", "role_create",
-       "role_update", "role_delete", "permission_escalation", "automod_change",
-       "guild_update"].includes(action)
+      ["channel_create", "channel_update", "channel_delete", "channel_overwrite",
+       "role_create", "role_update", "role_delete", "permission_escalation",
+       "automod_change", "guild_update"].includes(action)
     ) return true;
   }
   return false;

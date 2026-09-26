@@ -104,3 +104,14 @@ describe("URL allowlist safety", () => {
     expect(score).toBeGreaterThanOrEqual(50);
   });
 });
+
+
+describe("security threshold defaults", () => {
+  it("covers channel overwrite tampering", () => {
+    expect(DEFAULT_SETTINGS.thresholds.channelOverwrite).toBeGreaterThan(0);
+  });
+
+  it("sets a member-prune containment threshold", () => {
+    expect(DEFAULT_SETTINGS.thresholds.memberPrune).toBeGreaterThanOrEqual(1);
+  });
+});

@@ -33,11 +33,13 @@ type ActionKey =
   | "channel_create"
   | "channel_update"
   | "channel_delete"
+  | "channel_overwrite"
   | "role_create"
   | "role_update"
   | "role_delete"
   | "permission_escalation"
   | "ban_add"
+  | "member_prune"
   | "kick"
   | "webhook"
   | "bot_add"
@@ -60,7 +62,11 @@ const ACTION_SPECS: Record<number, ActionSpec> = {
   10: { key: "channel_create", threshold: "channelCreate", weight: 2, module: "antiNuke" },
   11: { key: "channel_update", threshold: "channelUpdate", weight: 2, module: "antiNuke" },
   12: { key: "channel_delete", threshold: "channelDelete", weight: 7, module: "antiNuke", critical: true },
+  13: { key: "channel_overwrite", threshold: "channelOverwrite", weight: 4, module: "permissionGuard" },
+  14: { key: "channel_overwrite", threshold: "channelOverwrite", weight: 5, module: "permissionGuard" },
+  15: { key: "channel_overwrite", threshold: "channelOverwrite", weight: 6, module: "permissionGuard", critical: true },
   20: { key: "kick", threshold: "kick", weight: 4, module: "memberGuard" },
+  21: { key: "member_prune", threshold: "memberPrune", weight: 12, module: "memberGuard", critical: true },
   22: { key: "ban_add", threshold: "banAdd", weight: 4, module: "memberGuard" },
   28: { key: "bot_add", threshold: "botAdd", weight: 12, module: "botGuard", critical: true },
   30: { key: "role_create", threshold: "roleCreate", weight: 2, module: "roleGuard" },
@@ -443,7 +449,17 @@ export class SecurityEngine {
       settings.thresholds.crossActionWindowSeconds
     );
 
-    const immediate = spec.key === "permission_escalation" || spec.key === "bot_add";
+    const pruneMembers = spec.key === "member_prune"
+      ? Number(entry.options?.members_removed ?? 0)
+      : 0;
+    const securitySelfOverwrite =
+      spec.key === "channel_overwrite" &&
+      String(entry.options?.id ?? "") === this.env.DISCORD_APPLICATION_ID;
+    const immediate =
+      spec.key === "permission_escalation" ||
+      spec.key === "bot_add" ||
+      securitySelfOverwrite ||
+      (spec.key === "member_prune" && pruneMembers >= thresholdValue);
     if (
       immediate ||
       count >= thresholdValue ||
@@ -454,7 +470,9 @@ export class SecurityEngine {
         actionType: entry.action_type,
         targetId: entry.target_id ?? null,
         actionCount: count,
-        crossActionScore: score
+        crossActionScore: score,
+        membersRemoved: pruneMembers || undefined,
+        securitySelfOverwrite
       });
     }
   }

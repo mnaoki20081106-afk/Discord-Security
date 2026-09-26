@@ -23,10 +23,12 @@ export type SecurityThresholds = {
   channelDelete: number;
   channelCreate: number;
   channelUpdate: number;
+  channelOverwrite: number;
   roleDelete: number;
   roleCreate: number;
   roleUpdate: number;
   banAdd: number;
+  memberPrune: number;
   kick: number;
   webhook: number;
   botAdd: number;

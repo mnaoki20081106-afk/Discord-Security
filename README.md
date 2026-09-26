@@ -22,10 +22,11 @@ The bot consumes Discord Gateway events directly for the fast path. A scheduled 
 Tracked destructive activity includes:
 
 - Channel create/update/delete
+- Channel permission-overwrite create/update/delete
 - Role create/update/delete
 - Dangerous permission escalation
 - Dangerous role assignment
-- Mass kick / mass ban
+- Mass kick / mass ban / member prune
 - Unauthorized bot additions
 - Unauthorized webhook creation/update/delete
 - Guild-level destructive changes
