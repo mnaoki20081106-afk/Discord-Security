@@ -634,3 +634,12 @@ describe("Security role hierarchy safety", () => {
     expect(roleIsStrictlyAbove({ position: 9 }, { position: 10 })).toBe(false);
   });
 });
+
+describe("audit entry time", () => {
+  it("derives the Discord action time from the audit-entry snowflake", () => {
+    const actionAt = Date.UTC(2026, 8, 26, 10, 31, 0, 123);
+    const snowflake = ((BigInt(actionAt - 1420070400000) << 22n) + 7n).toString();
+    expect(auditEntryCreatedAt(snowflake)).toBe(actionAt);
+    expect(auditEntryCreatedAt("not-a-snowflake")).toBeNull();
+  });
+});
