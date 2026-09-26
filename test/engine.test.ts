@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS, maintenanceScopeAllows } from "../src/db";
 import { classifyAuditAction, fetchAuditBacklog, scoreUrl } from "../src/engine";
 import { OrderedTaskLanes } from "../src/gateway";
-import { isConfiguredMainBot } from "../src/index";
+import { applyBridgeSecurityFloor, isConfiguredMainBot, isManualDashboardLockdown } from "../src/index";
 import {
   buildLockdownOverwrites,
   dangerousPermissionAdded,
@@ -471,5 +471,102 @@ describe("Main Bot bridge identity boundary", () => {
         "not-a-discord-id"
       )
     ).toBe(false);
+  });
+});
+
+
+describe("Main bridge protected Security core", () => {
+  it("forces the independent protection floor even if Main requests weaker settings", () => {
+    const current = structuredClone(DEFAULT_SETTINGS);
+    current.trustedUserIds = ["111", "222"];
+    current.trustedRoleIds = ["333"];
+    current.allowedBotIds = ["444"];
+    current.allowedDomains = ["discord.com", "example.com"];
+
+    const patch = applyBridgeSecurityFloor(current, {
+      enabled: false,
+      mode: "audit",
+      modules: {
+        ...current.modules,
+        antiNuke: false,
+        antiRaid: false,
+        antiSpam: false,
+        antiPhishing: false,
+        dangerousAttachments: false,
+        botGuard: false,
+        webhookGuard: false,
+        roleGuard: false,
+        permissionGuard: false,
+        automodGuard: false,
+        guildGuard: false,
+        memberGuard: false
+      },
+      response: {
+        ...current.response,
+        stripDangerousRoles: false,
+        kickMaliciousBots: false,
+        autoLockdown: false,
+        deleteUnsafeMessages: false,
+        quarantineRaidJoins: false
+      },
+      safety: {
+        enforceExplicitContentFilter: false,
+        minimumVerificationLevel: 0
+      },
+      thresholds: {
+        ...current.thresholds,
+        crossActionScore: 100,
+        channelDelete: 30,
+        roleDelete: 30,
+        botAdd: 10,
+        automodChange: 20,
+        severeContentUsers: 50
+      },
+      trustedUserIds: ["111", "999"],
+      trustedRoleIds: ["333", "888"],
+      allowedBotIds: ["444", "777"],
+      allowedDomains: ["discord.com", "evil.example"]
+    });
+
+    expect(patch.enabled).toBe(true);
+    expect(patch.mode).toBe("enforce");
+    expect(patch.modules?.antiNuke).toBe(true);
+    expect(patch.modules?.antiRaid).toBe(true);
+    expect(patch.modules?.antiSpam).toBe(false);
+    expect(patch.modules?.antiPhishing).toBe(true);
+    expect(patch.modules?.botGuard).toBe(true);
+    expect(patch.modules?.permissionGuard).toBe(true);
+    expect(patch.response?.autoLockdown).toBe(true);
+    expect(patch.response?.deleteUnsafeMessages).toBe(true);
+    expect(patch.safety?.enforceExplicitContentFilter).toBe(true);
+    expect(patch.safety?.minimumVerificationLevel).toBeGreaterThanOrEqual(2);
+    expect(patch.thresholds?.crossActionScore).toBeLessThanOrEqual(20);
+    expect(patch.thresholds?.channelDelete).toBeLessThanOrEqual(3);
+    expect(patch.thresholds?.roleDelete).toBeLessThanOrEqual(3);
+    expect(patch.thresholds?.botAdd).toBe(1);
+    expect(patch.thresholds?.automodChange).toBe(1);
+    expect(patch.thresholds?.severeContentUsers).toBeLessThanOrEqual(6);
+    expect(patch.trustedUserIds).toEqual(["111"]);
+    expect(patch.trustedRoleIds).toEqual(["333"]);
+    expect(patch.allowedBotIds).toEqual(["444"]);
+    expect(patch.allowedDomains).toEqual(["discord.com"]);
+  });
+
+  it("allows existing permanent exceptions to be removed", () => {
+    const current = structuredClone(DEFAULT_SETTINGS);
+    current.trustedUserIds = ["111", "222"];
+    const patch = applyBridgeSecurityFloor(current, {
+      trustedUserIds: ["222"]
+    });
+    expect(patch.trustedUserIds).toEqual(["222"]);
+  });
+});
+
+describe("Main dashboard lockdown boundary", () => {
+  it("allows Main to unlock only the lockdown it manually started", () => {
+    expect(isManualDashboardLockdown("manual dashboard lockdown")).toBe(true);
+    expect(isManualDashboardLockdown("channel_delete by attacker")).toBe(false);
+    expect(isManualDashboardLockdown("audit backlog overflow")).toBe(false);
+    expect(isManualDashboardLockdown(null)).toBe(false);
   });
 });
