@@ -132,6 +132,16 @@ export function scoreUrl(url: URL, settings: SecuritySettings): number {
   if (settings.blockedDomains.some(domain => domainMatches(host, domain))) return 100;
 
   let score = 0;
+  // A host such as discord.com.evil.example is not a Discord subdomain.
+  // If a trusted domain string is embedded in an unrelated hostname, treat it
+  // as a strong brand-lookalike signal instead of letting it sit just below
+  // the enforcement threshold.
+  if (settings.allowedDomains.some(domain => {
+    const normalized = domain.toLowerCase().replace(/^\.+|\.+$/g, "");
+    return normalized.length >= 4 &&
+      host.includes(normalized) &&
+      !domainMatches(host, normalized);
+  })) score += 40;
   if (host.startsWith("xn--") || host.includes(".xn--")) score += 45;
   if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(host) || host.includes(":")) score += 35;
   if (url.username || url.password) score += 35;
