@@ -19,6 +19,7 @@ import {
   buildManagedBotRecoveryOverwrites,
   dangerousPermissionAdded,
   isHierarchyRelevantDangerousRole,
+  lockdownOperatorMemberIds,
   patchChannelOverwrites,
   roleIsStrictlyAbove
 } from "../src/discord";
@@ -64,6 +65,27 @@ describe("lockdown permissions", () => {
     expect(BigInt(member.allow) & connect).toBe(0n);
     expect(BigInt(member.deny) & connect).toBe(connect);
     expect(BigInt(everyone.deny) & sendMessages).toBe(sendMessages);
+  });
+});
+
+describe("lockdown service-bot coexistence", () => {
+  it("keeps Main, Security, managed and explicitly allowed bots usable", () => {
+    const ids = lockdownOperatorMemberIds({
+      trustedUserIds:["trusted-human"],
+      allowedBotIds:["allowed-bot"],
+      managedBotIds:["managed-main"],
+      ownerId:"owner",
+      securityBotId:"security",
+      mainBotId:"main"
+    });
+    expect([...ids].sort()).toEqual([
+      "allowed-bot",
+      "main",
+      "managed-main",
+      "owner",
+      "security",
+      "trusted-human"
+    ]);
   });
 });
 
