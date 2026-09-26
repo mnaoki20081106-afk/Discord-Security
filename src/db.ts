@@ -43,6 +43,11 @@ CREATE TABLE IF NOT EXISTS lockdown_snapshots (
   expires_at INTEGER NOT NULL,
   created_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS bridge_nonces (
+  nonce TEXT PRIMARY KEY,
+  expires_at INTEGER NOT NULL
+);
 `;
 
 let initPromise: Promise<void> | null = null;
@@ -290,11 +295,26 @@ export async function hasMaintenanceLease(
   return false;
 }
 
+export async function consumeBridgeNonce(
+  env: Env,
+  nonce: string,
+  expiresAt: number
+): Promise<boolean> {
+  await ensureSchema(env);
+  if (!/^[a-zA-Z0-9_-]{16,128}$/.test(nonce)) return false;
+  const result = await env.DB.prepare(
+    "INSERT OR IGNORE INTO bridge_nonces(nonce,expires_at) VALUES(?,?)"
+  ).bind(nonce, expiresAt).run();
+  return (result.meta.changes ?? 0) > 0;
+}
+
 export async function cleanExpired(env: Env): Promise<void> {
   await ensureSchema(env);
-  await env.DB.prepare(
-    "DELETE FROM maintenance_leases WHERE expires_at<?"
-  ).bind(Date.now()).run();
+  const now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM maintenance_leases WHERE expires_at<?").bind(now),
+    env.DB.prepare("DELETE FROM bridge_nonces WHERE expires_at<?").bind(now)
+  ]);
 }
 
 export type LockdownSnapshot = {
