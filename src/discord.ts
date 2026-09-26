@@ -1,4 +1,4 @@
-import type { Env, SecuritySettings } from "./types";
+import type { Env, SecurityCapabilities, SecuritySettings } from "./types";
 import {
   deleteLockdownSnapshot,
   getLockdownSnapshot,
@@ -114,6 +114,7 @@ export function dangerousPermissionAdded(
 
 type DiscordRole = {
   id: string;
+  name?: string;
   permissions: string;
   managed?: boolean;
   position?: number;
@@ -138,6 +139,115 @@ export async function getMember(
     env,
     `/guilds/${guildId}/members/${userId}`
   ).catch(() => null);
+}
+
+const CAPABILITY_PERMISSIONS = [
+  ["View Audit Log", 1n << 7n],
+  ["View Channels", 1n << 10n],
+  ["Manage Channels", 1n << 4n],
+  ["Manage Roles", 1n << 28n],
+  ["Manage Webhooks", 1n << 29n],
+  ["Manage Messages", 1n << 13n],
+  ["Moderate Members", 1n << 40n],
+  ["Kick Members", 1n << 1n],
+  ["Ban Members", 1n << 2n]
+] as const;
+
+function memberBasePermissions(
+  guildId: string,
+  member: DiscordMember,
+  roles: DiscordRole[]
+): bigint {
+  let permissions = BigInt(
+    roles.find(role => role.id === guildId)?.permissions ?? "0"
+  );
+  for (const roleId of member.roles ?? []) {
+    const role = roles.find(item => item.id === roleId);
+    if (role) permissions |= BigInt(role.permissions || "0");
+  }
+  return permissions;
+}
+
+function highestMemberRole(
+  member: DiscordMember | null,
+  roles: DiscordRole[]
+): DiscordRole | null {
+  if (!member?.roles?.length) return null;
+  return roles
+    .filter(role => member.roles!.includes(role.id))
+    .sort((a, b) => {
+      const position = Number(b.position ?? 0) - Number(a.position ?? 0);
+      if (position !== 0) return position;
+      try {
+        return BigInt(a.id) < BigInt(b.id) ? 1 : -1;
+      } catch {
+        return 0;
+      }
+    })[0] ?? null;
+}
+
+export async function getSecurityCapabilities(
+  env: Env,
+  guildId: string,
+  managedBotIds: string[] = []
+): Promise<SecurityCapabilities> {
+  const [roles, self] = await Promise.all([
+    botJson<DiscordRole[]>(env, `/guilds/${guildId}/roles`).catch(() => []),
+    getMember(env, guildId, env.DISCORD_APPLICATION_ID)
+  ]);
+  if (!self || !roles.length) {
+    return {
+      administrator: false,
+      requiredReady: false,
+      maximumProtection: false,
+      roleAboveManagedBots: null,
+      highestRoleName: null,
+      highestRolePosition: null,
+      missingPermissions: CAPABILITY_PERMISSIONS.map(([name]) => name)
+    };
+  }
+
+  const permissions = memberBasePermissions(guildId, self, roles);
+  const administrator = (permissions & (1n << 3n)) !== 0n;
+  const missingPermissions = administrator
+    ? []
+    : CAPABILITY_PERMISSIONS
+        .filter(([, bit]) => (permissions & bit) !== bit)
+        .map(([name]) => name);
+
+  const selfHighest = highestMemberRole(self, roles);
+  const managedMembers = await Promise.all(
+    managedBotIds.map(id => getMember(env, guildId, id))
+  );
+  const installedManagedHighest = managedMembers
+    .map(member => highestMemberRole(member, roles))
+    .filter((role): role is DiscordRole => Boolean(role));
+
+  let roleAboveManagedBots: boolean | null = null;
+  if (installedManagedHighest.length && selfHighest) {
+    const selfPosition = Number(selfHighest.position ?? 0);
+    roleAboveManagedBots = installedManagedHighest.every(role => {
+      const otherPosition = Number(role.position ?? 0);
+      if (selfPosition !== otherPosition) return selfPosition > otherPosition;
+      try {
+        return BigInt(selfHighest.id) < BigInt(role.id);
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  return {
+    administrator,
+    requiredReady: missingPermissions.length === 0,
+    // Administrator bypasses channel permission overwrites, which is the
+    // strongest survivability mode when a hostile moderator edits channels.
+    maximumProtection: administrator,
+    roleAboveManagedBots,
+    highestRoleName: selfHighest?.name ?? null,
+    highestRolePosition: selfHighest?.position ?? null,
+    missingPermissions
+  };
 }
 
 export async function stripDangerousRoles(

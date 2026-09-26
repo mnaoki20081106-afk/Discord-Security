@@ -123,3 +123,10 @@ describe("managed service bot model", () => {
     expect(DEFAULT_SETTINGS.allowedBotIds).toEqual([]);
   });
 });
+
+
+describe("maximum protection policy", () => {
+  it("keeps dangerous-permission checks independent of capability diagnostics", () => {
+    expect(dangerousPermissionAdded("0", (1n << 28n).toString())).toBe(true);
+  });
+});

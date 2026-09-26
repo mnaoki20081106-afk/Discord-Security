@@ -141,7 +141,7 @@ Enable privileged intents:
 - Server Members Intent
 - Message Content Intent
 
-Recommended server permissions:
+Recommended server permissions (hardened minimum):
 
 - View Audit Log
 - View Channels
@@ -153,9 +153,9 @@ Recommended server permissions:
 - Kick Members
 - Ban Members
 
-Administrator is deliberately not required.
+Administrator is not required for the hardened-minimum mode. For **maximum protection**, Administrator is supported and the dashboard reports it as Maximum Protection because it prevents channel permission overwrites from locking the Security Bot out. This increases the impact of a leaked Security Bot token, so the Security token must remain isolated in the Security Worker secret store.
 
-**Role hierarchy matters:** the Security Bot role must be above the Main Bot and above every role it may need to strip or contain.
+**Role hierarchy matters:** the Security Bot role must be above the Main Bot and above every role it may need to strip or contain. The dashboard now diagnoses both permission readiness and Main/Security role ordering.
 
 ## Deployment
 

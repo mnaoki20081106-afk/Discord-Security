@@ -14,7 +14,8 @@ import {
 import {
   botJson,
   enterLockdown,
-  exitLockdown
+  exitLockdown,
+  getSecurityCapabilities
 } from "./discord";
 import {
   DiscordSecurityGateway,
@@ -187,12 +188,18 @@ async function handleInternal(
   const overview = url.pathname.match(/^\/internal\/guilds\/(\d+)\/overview$/);
   if (overview && request.method === "GET") {
     const guildId = overview[1]!;
-    const [settings, status, incidents, lockdown, guild] = await Promise.all([
+    const managedServiceBots = await listManagedServiceBots(env, guildId);
+    const [settings, status, incidents, lockdown, guild, capabilities] = await Promise.all([
       getSecuritySettings(env, guildId),
       gatewayStatus(env),
       listIncidents(env, guildId, Number(url.searchParams.get("limit") ?? 30)),
       getLockdownSnapshot(env, guildId),
-      botJson<{ id: string; name: string }>(env, `/guilds/${guildId}`).catch(() => null)
+      botJson<{ id: string; name: string }>(env, `/guilds/${guildId}`).catch(() => null),
+      getSecurityCapabilities(
+        env,
+        guildId,
+        managedServiceBots.map(item => item.botId)
+      )
     ]);
     const permissions = (
       128n | 32n | 268435456n | 16n | 536870912n | 8192n |
@@ -201,7 +208,8 @@ async function handleInternal(
     return json({
       configured: true,
       installed: Boolean(guild),
-      managedServiceBots: await listManagedServiceBots(env, guildId),
+      managedServiceBots,
+      capabilities,
       inviteUrl:
         `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(env.DISCORD_APPLICATION_ID)}` +
         `&permissions=${permissions}&integration_type=0&scope=bot%20applications.commands`,

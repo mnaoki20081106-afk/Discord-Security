@@ -90,6 +90,16 @@ export interface Env {
   SECURITY_BRIDGE_SECRET: string;
 }
 
+export type SecurityCapabilities = {
+  administrator: boolean;
+  requiredReady: boolean;
+  maximumProtection: boolean;
+  roleAboveManagedBots: boolean | null;
+  highestRoleName: string | null;
+  highestRolePosition: number | null;
+  missingPermissions: string[];
+};
+
 export type GatewayStatus = {
   connected: boolean;
   sessionId: string | null;
