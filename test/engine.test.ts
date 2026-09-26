@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS, maintenanceScopeAllows } from "../src/db";
 import { classifyAuditAction, fetchAuditBacklog, scoreUrl } from "../src/engine";
 import { OrderedTaskLanes } from "../src/gateway";
+import { isConfiguredMainBot } from "../src/index";
 import {
   buildLockdownOverwrites,
   dangerousPermissionAdded,
@@ -451,5 +452,24 @@ describe("Gateway Security event lanes", () => {
     releaseGuildA();
     await lanes.waitForLane("audit:guild-a");
     expect(lanes.pendingLaneCount()).toBe(0);
+  });
+});
+
+
+describe("Main Bot bridge identity boundary", () => {
+  it("accepts only the exact configured Main Bot application ID", () => {
+    const env = { MAIN_BOT_APPLICATION_ID: "123456789012345678" };
+    expect(isConfiguredMainBot(env, "123456789012345678")).toBe(true);
+    expect(isConfiguredMainBot(env, "123456789012345679")).toBe(false);
+  });
+
+  it("fails closed when the Main Bot application ID is absent or invalid", () => {
+    expect(isConfiguredMainBot({}, "123456789012345678")).toBe(false);
+    expect(
+      isConfiguredMainBot(
+        { MAIN_BOT_APPLICATION_ID: "not-a-discord-id" },
+        "not-a-discord-id"
+      )
+    ).toBe(false);
   });
 });
