@@ -711,7 +711,7 @@ describe("high-confidence containment policy", () => {
     })).toEqual({contain:true,lockdown:true});
   });
 
-  it("uses targeted rollback for a first high-risk bot add or self privilege grant", () => {
+  it("records but does not enforce one-off ambiguous admin actions", () => {
     expect(auditContainmentDecision({
       action:"bot_add",
       count:1,
@@ -723,7 +723,7 @@ describe("high-confidence containment policy", () => {
       pruneMembers:0,
       highRiskBotAdd:true,
       selfPrivilegeGrant:false
-    })).toEqual({contain:true,lockdown:false});
+    })).toEqual({contain:false,lockdown:false});
 
     expect(auditContainmentDecision({
       action:"permission_escalation",
@@ -736,7 +736,61 @@ describe("high-confidence containment policy", () => {
       pruneMembers:0,
       highRiskBotAdd:false,
       selfPrivilegeGrant:true
+    })).toEqual({contain:false,lockdown:false});
+
+    expect(auditContainmentDecision({
+      action:"channel_overwrite",
+      count:1,
+      thresholdValue:4,
+      crossActionScore:6,
+      crossActionThreshold:12,
+      destructiveKinds:0,
+      securitySelfOverwrite:true,
+      pruneMembers:0,
+      highRiskBotAdd:false,
+      selfPrivilegeGrant:false
+    })).toEqual({contain:false,lockdown:false});
+  });
+
+  it("enforces only after repeated high-risk admin signals", () => {
+    expect(auditContainmentDecision({
+      action:"bot_add",
+      count:2,
+      thresholdValue:1,
+      crossActionScore:24,
+      crossActionThreshold:12,
+      destructiveKinds:0,
+      securitySelfOverwrite:false,
+      pruneMembers:0,
+      highRiskBotAdd:true,
+      selfPrivilegeGrant:false
     })).toEqual({contain:true,lockdown:false});
+
+    expect(auditContainmentDecision({
+      action:"permission_escalation",
+      count:3,
+      thresholdValue:1,
+      crossActionScore:36,
+      crossActionThreshold:12,
+      destructiveKinds:0,
+      securitySelfOverwrite:false,
+      pruneMembers:0,
+      highRiskBotAdd:false,
+      selfPrivilegeGrant:true
+    })).toEqual({contain:true,lockdown:false});
+
+    expect(auditContainmentDecision({
+      action:"channel_overwrite",
+      count:3,
+      thresholdValue:4,
+      crossActionScore:18,
+      crossActionThreshold:12,
+      destructiveKinds:0,
+      securitySelfOverwrite:true,
+      pruneMembers:0,
+      highRiskBotAdd:false,
+      selfPrivilegeGrant:false
+    })).toEqual({contain:true,lockdown:true});
   });
 
   it("ordinary destructive cleanup stays below the automatic floor", () => {
