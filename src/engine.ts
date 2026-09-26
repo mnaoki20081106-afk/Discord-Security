@@ -67,6 +67,96 @@ export function shouldSanctionActor(action: ActionKey): boolean {
   ]).has(action);
 }
 
+const DESTRUCTIVE_ACTIONS = new Set<ActionKey>([
+  "channel_delete",
+  "role_delete",
+  "kick",
+  "ban_add",
+  "member_prune"
+]);
+
+export function isDestructiveAuditAction(action: ActionKey): boolean {
+  return DESTRUCTIVE_ACTIONS.has(action);
+}
+
+export function auditContainmentDecision(input: {
+  action: ActionKey;
+  count: number;
+  thresholdValue: number;
+  crossActionScore: number;
+  crossActionThreshold: number;
+  destructiveKinds: number;
+  securitySelfOverwrite: boolean;
+  pruneMembers: number;
+  highRiskBotAdd: boolean;
+  selfPrivilegeGrant: boolean;
+}): { contain: boolean; lockdown: boolean } {
+  const threshold=Math.max(1,input.thresholdValue);
+  const destructiveBurst=
+    isDestructiveAuditAction(input.action) &&
+    input.count>=threshold;
+  const mixedDestructiveBurst=
+    input.destructiveKinds>=2 &&
+    input.crossActionScore>=input.crossActionThreshold;
+  const nonDestructiveBurst=
+    !isDestructiveAuditAction(input.action) &&
+    input.count>=Math.max(4,threshold*2);
+  const pruneBurst=
+    input.action==="member_prune" &&
+    input.pruneMembers>=threshold;
+
+  const contain=
+    input.securitySelfOverwrite ||
+    input.highRiskBotAdd ||
+    input.selfPrivilegeGrant ||
+    pruneBurst ||
+    destructiveBurst ||
+    mixedDestructiveBurst ||
+    nonDestructiveBurst;
+
+  // First-time privilege grants / privileged bot installs receive targeted
+  // rollback only. Global lockdown requires a destructive or repeated pattern.
+  const lockdown=
+    input.securitySelfOverwrite ||
+    pruneBurst ||
+    destructiveBurst ||
+    mixedDestructiveBurst ||
+    nonDestructiveBurst;
+
+  return {contain,lockdown};
+}
+
+export function isStrongSpam(input:{
+  messageCount:number;
+  repeatedCount:number;
+  mentions:number;
+  spamMessages:number;
+  mentionLimit:number;
+}):boolean{
+  const burstFloor=Math.max(input.spamMessages*2,input.spamMessages+4);
+  const repeated=
+    input.messageCount>=input.spamMessages &&
+    input.repeatedCount>=3;
+  const massMention=input.mentions>=Math.max(input.mentionLimit,10);
+  return input.messageCount>=burstFloor||repeated||massMention;
+}
+
+export function raidConfidence(input:{
+  joins:number;
+  youngJoins:number;
+  raidJoins:number;
+}):{suspicious:boolean;confirmed:boolean}{
+  const threshold=Math.max(2,input.raidJoins);
+  const suspicious=input.joins>=threshold;
+  const confirmed=
+    input.joins>=threshold*2 ||
+    (
+      suspicious &&
+      input.youngJoins>=Math.max(3,Math.ceil(threshold*0.6))
+    );
+  return {suspicious,confirmed};
+}
+
 type WeightedAction = { at: number; weight: number; key: ActionKey };
 type SevereContentEvent = { at: number; userId: string };
 
@@ -121,10 +211,11 @@ const SUSPICIOUS_TERMS = [
   "nitro", "gift", "claim", "airdrop", "wallet", "login", "verify",
   "steam", "discord", "support", "giveaway", "bonus", "reward"
 ];
-const DANGEROUS_EXTENSIONS = new Set([
-  "exe", "scr", "com", "bat", "cmd", "ps1", "vbs", "vbe", "js", "jse",
-  "wsf", "wsh", "msi", "msp", "jar", "lnk", "reg", "hta"
+const HIGH_RISK_EXECUTABLE_EXTENSIONS = new Set([
+  "exe", "scr", "com", "bat", "cmd", "ps1", "vbs", "vbe",
+  "wsf", "wsh", "msi", "msp", "lnk", "reg", "hta"
 ]);
+const REVIEW_ONLY_ATTACHMENT_EXTENSIONS = new Set(["js","jse","jar"]);
 const SHORTENERS = new Set([
   "bit.ly", "tinyurl.com", "t.co", "is.gd", "cutt.ly", "rb.gy"
 ]);
@@ -172,7 +263,7 @@ export function scoreUrl(url: URL, settings: SecuritySettings): number {
     return normalized.length >= 4 &&
       host.includes(normalized) &&
       !domainMatches(host, normalized);
-  })) score += 40;
+  })) score += 60;
   if (host.startsWith("xn--") || host.includes(".xn--")) score += 45;
   if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(host) || host.includes(":")) score += 35;
   if (url.username || url.password) score += 35;
@@ -188,9 +279,22 @@ export function scoreUrl(url: URL, settings: SecuritySettings): number {
   return score;
 }
 
-function dangerousAttachment(filename: string | undefined): boolean {
+function attachmentRisk(
+  filename: string | undefined
+): "high" | "review" | null {
   const ext = String(filename ?? "").toLowerCase().split(".").pop() ?? "";
-  return DANGEROUS_EXTENSIONS.has(ext);
+  if (HIGH_RISK_EXECUTABLE_EXTENSIONS.has(ext)) return "high";
+  if (REVIEW_ONLY_ATTACHMENT_EXTENSIONS.has(ext)) return "review";
+  return null;
+}
+
+function normalizedMessageFingerprint(content: string): string {
+  return content
+    .toLowerCase()
+    .replace(/https?:\/\/[^\s<>{}\[\]"']+/gi,"<url>")
+    .replace(/\s+/g," ")
+    .trim()
+    .slice(0,500);
 }
 
 export type AuditBacklog = {
@@ -288,9 +392,13 @@ export class SecurityEngine {
   private weightedActions = new Map<string, WeightedAction[]>();
   private messageWindows = new Map<string, number[]>();
   private linkWindows = new Map<string, number[]>();
+  private attachmentWindows = new Map<string, number[]>();
+  private repeatedMessageWindows = new Map<string, Array<{at:number;fingerprint:string}>>();
   private joinWindows = new Map<string, number[]>();
+  private youngJoinWindows = new Map<string, number[]>();
   private severeContentWindows = new Map<string, SevereContentEvent[]>();
   private raidModeUntil = new Map<string, number>();
+  private raidLockdownUntil = new Map<string, number>();
   private contentOutbreakCooldown = new Map<string, number>();
   private sanctionCooldown = new Map<string, number>();
   private settingsCache = new Map<string, { value: SecuritySettings; until: number }>();
@@ -319,19 +427,71 @@ export class SecurityEngine {
     return history.length;
   }
 
-  private weightedScore(
+  private weightedProfile(
     guildId: string,
     actorId: string,
     spec: ActionSpec,
     seconds: number
-  ): number {
+  ): { score:number; destructiveKinds:number } {
     const key = guildId + ":" + actorId;
     const now = Date.now();
     const history = (this.weightedActions.get(key) ?? [])
       .filter(item => now - item.at <= seconds * 1000);
     history.push({ at: now, weight: spec.weight, key: spec.key });
     this.weightedActions.set(key, history);
-    return history.reduce((total, item) => total + item.weight, 0);
+    return {
+      score:history.reduce((total,item)=>total+item.weight,0),
+      destructiveKinds:new Set(
+        history
+          .filter(item=>isDestructiveAuditAction(item.key))
+          .map(item=>item.key)
+      ).size
+    };
+  }
+
+  private repeatedMessageCount(
+    key:string,
+    seconds:number,
+    content:string
+  ):number{
+    const now=Date.now();
+    const fingerprint=normalizedMessageFingerprint(content);
+    const history=(this.repeatedMessageWindows.get(key)??[])
+      .filter(item=>now-item.at<=seconds*1000);
+    if(fingerprint) history.push({at:now,fingerprint});
+    this.repeatedMessageWindows.set(key,history);
+    if(!fingerprint) return 0;
+    return history.filter(item=>item.fingerprint===fingerprint).length;
+  }
+
+  private async botHasDangerousPermissions(
+    guildId:string,
+    botId:string
+  ):Promise<boolean>{
+    try{
+      const [member,roles]=await Promise.all([
+        getMember(this.env,guildId,botId),
+        botJson<Array<{id:string;permissions:string}>>(
+          this.env,
+          `/guilds/${guildId}/roles`
+        )
+      ]);
+      if(!member) return false;
+      const roleIds=new Set(member.roles??[]);
+      let permissions=0n;
+      for(const role of roles){
+        if(role.id===guildId||roleIds.has(role.id)){
+          permissions|=BigInt(role.permissions||"0");
+        }
+      }
+      const dangerous=
+        (1n<<1n)|(1n<<2n)|(1n<<3n)|(1n<<4n)|
+        (1n<<5n)|(1n<<28n)|(1n<<29n)|(1n<<40n);
+      return (permissions&dangerous)!==0n;
+    }catch{
+      // Failed inspection is not proof of malicious intent.
+      return false;
+    }
   }
 
   private async trusted(
@@ -409,11 +569,14 @@ export class SecurityEngine {
     settings: SecuritySettings,
     spec: ActionSpec,
     detail: Record<string, unknown>,
-    sanctionActor = true
+    sanctionActor = true,
+    lockdown = true
   ): Promise<void> {
     const enforcing = settings.mode === "enforce";
     const summary = enforcing
-      ? `${spec.key} の異常操作を検知し、実行者を隔離しました`
+      ? sanctionActor
+        ? `${spec.key} の高信頼度な異常操作を検知し、実行者を隔離しました`
+        : `${spec.key} の高信頼度な異常操作を検知し、対象を封じ込めました`
       : `${spec.key} の異常操作を検知しました（Audit only・自動処置なし）`;
     await recordIncident(this.env, {
       guildId,
@@ -440,7 +603,7 @@ export class SecurityEngine {
       await this.sanction(guildId, actorId, settings, spec.key);
     }
 
-    if (settings.response.autoLockdown && settings.mode === "enforce") {
+    if (lockdown && settings.response.autoLockdown && settings.mode === "enforce") {
       await enterLockdown(
         this.env,
         guildId,
@@ -563,18 +726,68 @@ export class SecurityEngine {
       return;
     }
 
-    if (permissionChange.escalation && entry.target_id && permissionChange.oldPermissions) {
-      if (settings.mode === "enforce") {
-        await rollbackRolePermissions(
-          this.env,
-          guildId,
-          entry.target_id,
-          permissionChange.oldPermissions
-        ).catch(() => false);
-      }
+    const thresholdValue = Number(settings.thresholds[spec.threshold]);
+    const count = this.windowCount(
+      guildId + ":" + actorId + ":" + spec.key,
+      settings.thresholds.actionWindowSeconds
+    );
+    const profile = this.weightedProfile(
+      guildId,
+      actorId,
+      spec,
+      settings.thresholds.crossActionWindowSeconds
+    );
+
+    const pruneMembers = spec.key === "member_prune"
+      ? Number(entry.options?.members_removed ?? 0)
+      : 0;
+    const securitySelfOverwrite =
+      spec.key === "channel_overwrite" &&
+      String(entry.options?.id ?? "") === this.env.DISCORD_APPLICATION_ID;
+    const selfPrivilegeGrant =
+      dangerousMemberRoles.length > 0 &&
+      Boolean(entry.target_id) &&
+      entry.target_id === actorId;
+    const highRiskBotAdd =
+      spec.key === "bot_add" &&
+      Boolean(entry.target_id) &&
+      await this.botHasDangerousPermissions(guildId,entry.target_id!);
+
+    const decision=auditContainmentDecision({
+      action:spec.key,
+      count,
+      thresholdValue,
+      crossActionScore:profile.score,
+      crossActionThreshold:settings.thresholds.crossActionScore,
+      destructiveKinds:profile.destructiveKinds,
+      securitySelfOverwrite,
+      pruneMembers,
+      highRiskBotAdd,
+      selfPrivilegeGrant
+    });
+
+    if (!decision.contain) return;
+
+    // Targeted remediation only happens after the high-confidence gate.
+    if (
+      permissionChange.escalation &&
+      entry.target_id &&
+      permissionChange.oldPermissions &&
+      settings.mode === "enforce"
+    ) {
+      await rollbackRolePermissions(
+        this.env,
+        guildId,
+        entry.target_id,
+        permissionChange.oldPermissions
+      ).catch(() => false);
     }
 
-    if (dangerousMemberRoles.length && entry.target_id && settings.mode === "enforce") {
+    if (
+      dangerousMemberRoles.length &&
+      entry.target_id &&
+      settings.mode === "enforce"
+    ) {
       for (const roleId of dangerousMemberRoles) {
         await botFetch(
           this.env,
@@ -582,7 +795,7 @@ export class SecurityEngine {
           {
             method: "DELETE",
             headers: {
-              "X-Audit-Log-Reason": "Discord Security: unauthorized dangerous role assignment"
+              "X-Audit-Log-Reason": "Discord Security: high-confidence privilege escalation"
             }
           }
         ).catch(() => undefined);
@@ -599,7 +812,7 @@ export class SecurityEngine {
         this.env,
         guildId,
         entry.target_id,
-        "Discord Security: unauthorized bot addition"
+        "Discord Security: high-confidence unauthorized bot addition"
       ).catch(() => false);
     }
 
@@ -612,45 +825,19 @@ export class SecurityEngine {
       await deleteWebhook(this.env, entry.target_id).catch(() => false);
     }
 
-    const thresholdValue = Number(settings.thresholds[spec.threshold]);
-    const count = this.windowCount(
-      guildId + ":" + actorId + ":" + spec.key,
-      settings.thresholds.actionWindowSeconds
-    );
-    const score = this.weightedScore(
-      guildId,
-      actorId,
-      spec,
-      settings.thresholds.crossActionWindowSeconds
-    );
-
-    const pruneMembers = spec.key === "member_prune"
-      ? Number(entry.options?.members_removed ?? 0)
-      : 0;
-    const securitySelfOverwrite =
-      spec.key === "channel_overwrite" &&
-      String(entry.options?.id ?? "") === this.env.DISCORD_APPLICATION_ID;
-    const immediate =
-      spec.key === "permission_escalation" ||
-      spec.key === "bot_add" ||
-      securitySelfOverwrite ||
-      (spec.key === "member_prune" && pruneMembers >= thresholdValue);
-    if (
-      immediate ||
-      count >= thresholdValue ||
-      score >= settings.thresholds.crossActionScore
-    ) {
-      const sanctionActor = shouldSanctionActor(spec.key);
-      await this.trigger(guildId, actorId, settings, spec, {
-        auditEntryId: entry.id,
-        actionType: entry.action_type,
-        targetId: entry.target_id ?? null,
-        actionCount: count,
-        crossActionScore: score,
-        membersRemoved: pruneMembers || undefined,
-        securitySelfOverwrite
-      }, sanctionActor);
-    }
+    const sanctionActor = shouldSanctionActor(spec.key);
+    await this.trigger(guildId, actorId, settings, spec, {
+      auditEntryId: entry.id,
+      actionType: entry.action_type,
+      targetId: entry.target_id ?? null,
+      actionCount: count,
+      crossActionScore: profile.score,
+      destructiveKinds:profile.destructiveKinds,
+      membersRemoved: pruneMembers || undefined,
+      securitySelfOverwrite,
+      highRiskBotAdd,
+      selfPrivilegeGrant
+    }, sanctionActor, decision.lockdown);
   }
 
   async handleJoin(event: DiscordMemberAddEvent): Promise<void> {
@@ -665,46 +852,72 @@ export class SecurityEngine {
     history.push(now);
     this.joinWindows.set(event.guild_id, history);
 
-    if (history.length >= settings.thresholds.raidJoins) {
+    const accountAge = now - snowflakeCreatedAt(event.user.id);
+    const tooYoung =
+      accountAge >= 0 &&
+      accountAge < settings.thresholds.minAccountAgeHours * 60 * 60_000;
+    const youngHistory=(this.youngJoinWindows.get(event.guild_id)??[])
+      .filter(at=>now-at<=windowMs);
+    if(tooYoung) youngHistory.push(now);
+    this.youngJoinWindows.set(event.guild_id,youngHistory);
+
+    const confidence=raidConfidence({
+      joins:history.length,
+      youngJoins:youngHistory.length,
+      raidJoins:settings.thresholds.raidJoins
+    });
+    const raidAlreadyActive=(this.raidModeUntil.get(event.guild_id)??0)>now;
+
+    if(confidence.suspicious&&!raidAlreadyActive){
       this.raidModeUntil.set(
         event.guild_id,
         now + settings.response.lockdownMinutes * 60_000
       );
-      await recordIncident(this.env, {
-        guildId: event.guild_id,
-        actorId: null,
-        kind: "raid",
-        severity: "critical",
-        summary: `${settings.thresholds.raidWindowSeconds}秒で${history.length}人の参加を検知`,
-        data: { joins: history.length }
+      await recordIncident(this.env,{
+        guildId:event.guild_id,
+        actorId:null,
+        kind:confidence.confirmed?"raid":"raid_suspected",
+        severity:confidence.confirmed?"critical":"high",
+        summary:
+          `${settings.thresholds.raidWindowSeconds}秒で${history.length}人の参加を検知`+
+          `（新規アカウント ${youngHistory.length}人）`,
+        data:{joins:history.length,youngJoins:youngHistory.length}
       });
       await sendSecurityLog(
         this.env,
         event.guild_id,
         settings,
-        "Raid detected",
-        `${settings.thresholds.raidWindowSeconds}秒以内に${history.length}人が参加しました。`,
-        true
+        confidence.confirmed?"Raid confirmed":"Raid suspected",
+        `${settings.thresholds.raidWindowSeconds}秒以内に${history.length}人が参加しました。`+
+        ` 新規アカウント: **${youngHistory.length}**`,
+        confidence.confirmed
       );
-      if (settings.mode === "enforce" && settings.response.autoLockdown) {
+    }
+
+    if(
+      confidence.confirmed &&
+      (this.raidLockdownUntil.get(event.guild_id)??0)<=now
+    ){
+      this.raidLockdownUntil.set(
+        event.guild_id,
+        now + settings.response.lockdownMinutes * 60_000
+      );
+      if(settings.mode==="enforce"&&settings.response.autoLockdown){
         await enterLockdown(
           this.env,
           event.guild_id,
           settings.response.lockdownMinutes,
-          "join raid"
+          "confirmed join raid"
         ).catch(() => false);
       }
     }
 
-    const accountAge = now - snowflakeCreatedAt(event.user.id);
-    const tooYoung =
-      accountAge >= 0 &&
-      accountAge < settings.thresholds.minAccountAgeHours * 60 * 60_000;
     const raidActive = (this.raidModeUntil.get(event.guild_id) ?? 0) > now;
     if (
       settings.mode === "enforce" &&
       settings.response.quarantineRaidJoins &&
-      (raidActive || (tooYoung && history.length >= Math.max(3, Math.floor(settings.thresholds.raidJoins / 2))))
+      raidActive &&
+      tooYoung
     ) {
       await timeoutMember(
         this.env,
@@ -813,49 +1026,120 @@ export class SecurityEngine {
     let violation: string | null = null;
     let metadata: Record<string, unknown> = {};
 
+    let timeoutMinutes:number|null=null;
+    let deleteUnsafe=false;
+
     if (settings.modules.antiSpam) {
       const count = this.messageWindow(
         this.messageWindows,
         userKey,
         settings.thresholds.spamWindowSeconds
       );
+      const repeatedCount=this.repeatedMessageCount(
+        userKey,
+        settings.thresholds.spamWindowSeconds,
+        event.content??""
+      );
       const mentions =
         (event.mentions?.length ?? 0) + (event.mention_roles?.length ?? 0);
-      if (
-        count >= settings.thresholds.spamMessages ||
-        mentions >= settings.thresholds.mentionLimit
-      ) {
-        violation = "spam";
-        metadata = { messageCount: count, mentions };
+      if(isStrongSpam({
+        messageCount:count,
+        repeatedCount,
+        mentions,
+        spamMessages:settings.thresholds.spamMessages,
+        mentionLimit:settings.thresholds.mentionLimit
+      })){
+        violation="spam";
+        metadata={messageCount:count,repeatedCount,mentions};
+        deleteUnsafe=true;
+        timeoutMinutes=5;
       }
     }
 
     const urls = extractUrls(event.content ?? "");
     if (!violation && settings.modules.antiPhishing && urls.length) {
-      const risky = urls
-        .map(url => ({ domain: url.hostname.toLowerCase(), score: scoreUrl(url, settings) }))
-        .filter(item => item.score >= 50);
+      const scored=urls.map(url=>({
+        domain:url.hostname.toLowerCase(),
+        score:scoreUrl(url,settings)
+      }));
+      const maxRisk=scored.reduce((max,item)=>Math.max(max,item.score),0);
       const linkCount = this.messageWindow(
         this.linkWindows,
         userKey,
         settings.thresholds.linkWindowSeconds
       );
-      if (risky.length || (urls.length > 0 && linkCount >= settings.thresholds.linkBurst)) {
-        violation = risky.length ? "phishing_url" : "link_burst";
-        metadata = {
-          domains: [...new Set(urls.map(url => url.hostname.toLowerCase()))].slice(0, 10),
-          maxRisk: risky.reduce((max, item) => Math.max(max, item.score), 0)
+      if(maxRisk>=80){
+        violation="phishing_url";
+        metadata={
+          domains:[...new Set(scored.map(item=>item.domain))].slice(0,10),
+          maxRisk,
+          linkCount
         };
+        deleteUnsafe=true;
+        timeoutMinutes=settings.response.timeoutMinutes;
+      }else if(
+        linkCount>=Math.max(settings.thresholds.linkBurst*2,6)
+      ){
+        violation="link_burst";
+        metadata={
+          domains:[...new Set(scored.map(item=>item.domain))].slice(0,10),
+          maxRisk,
+          linkCount
+        };
+        deleteUnsafe=true;
+        timeoutMinutes=5;
+      }else if(maxRisk>=50){
+        // Ambiguous links are recorded for review, never punished automatically.
+        await recordIncident(this.env,{
+          guildId,
+          actorId:event.author.id,
+          kind:"suspicious_link",
+          severity:"low",
+          summary:"不審リンクを記録しました（自動処置なし）",
+          data:{
+            domains:[...new Set(scored.map(item=>item.domain))].slice(0,10),
+            maxRisk
+          }
+        });
       }
     }
 
     if (!violation && settings.modules.dangerousAttachments) {
-      const dangerous = (event.attachments ?? [])
-        .filter(item => dangerousAttachment(item.filename))
-        .map(item => String(item.filename ?? "unknown"));
-      if (dangerous.length) {
-        violation = "dangerous_attachment";
-        metadata = { filenames: dangerous.slice(0, 10) };
+      const risky=(event.attachments??[])
+        .map(item=>({
+          filename:String(item.filename??"unknown"),
+          risk:attachmentRisk(item.filename)
+        }))
+        .filter(item=>item.risk);
+      const high=risky.filter(item=>item.risk==="high");
+      const review=risky.filter(item=>item.risk==="review");
+
+      if(high.length){
+        const attachmentCount=this.messageWindow(
+          this.attachmentWindows,
+          userKey,
+          60
+        );
+        violation="dangerous_attachment";
+        metadata={
+          filenames:high.map(item=>item.filename).slice(0,10),
+          attachmentCount
+        };
+        // The executable itself is removed, but a user is only timed out after
+        // repeated delivery attempts. This avoids punishing a one-off mistake.
+        deleteUnsafe=true;
+        timeoutMinutes=attachmentCount>=2
+          ?settings.response.timeoutMinutes
+          :null;
+      }else if(review.length){
+        await recordIncident(this.env,{
+          guildId,
+          actorId:event.author.id,
+          kind:"suspicious_attachment",
+          severity:"low",
+          summary:"実行可能性のある添付を記録しました（自動処置なし）",
+          data:{filenames:review.map(item=>item.filename).slice(0,10)}
+        });
       }
     }
 
@@ -865,21 +1149,23 @@ export class SecurityEngine {
       guildId,
       actorId: event.author.id,
       kind: violation,
-      severity: violation === "spam" ? "medium" : "high",
-      summary: `危険な投稿を遮断しました: ${violation}`,
+      severity: violation === "spam" || violation === "link_burst" ? "medium" : "high",
+      summary: `高信頼度の危険投稿を検知しました: ${violation}`,
       data: metadata
     });
 
     if (settings.mode === "enforce") {
-      if (settings.response.deleteUnsafeMessages) {
+      if (deleteUnsafe && settings.response.deleteUnsafeMessages) {
         await deleteMessage(this.env, event.channel_id, event.id).catch(() => false);
       }
-      await timeoutMember(
-        this.env,
-        guildId,
-        event.author.id,
-        violation === "spam" ? 5 : settings.response.timeoutMinutes
-      ).catch(() => false);
+      if(timeoutMinutes!==null){
+        await timeoutMember(
+          this.env,
+          guildId,
+          event.author.id,
+          timeoutMinutes
+        ).catch(() => false);
+      }
     }
 
     await sendSecurityLog(
@@ -887,9 +1173,12 @@ export class SecurityEngine {
       guildId,
       settings,
       "Message Security",
-      `<@${event.author.id}> の投稿を **${violation}** として遮断しました。\n` +
+      `<@${event.author.id}> の投稿を **${violation}** と判定しました。\n` +
+      (timeoutMinutes===null
+        ?"投稿のみ遮断し、ユーザーへのTimeoutは行っていません。\n"
+        :"高信頼度判定のため自動封じ込めを実行しました。\n")+
       "本文や添付ファイル本体はSecurity Logへ保存していません。",
-      violation !== "spam"
+      violation === "phishing_url" || violation === "dangerous_attachment"
     );
 
     await this.maybeContainContentOutbreak(
