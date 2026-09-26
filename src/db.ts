@@ -301,6 +301,43 @@ export async function createMaintenanceLease(
   return { id, expiresAt };
 }
 
+const DASHBOARD_EDIT_ACTIONS = new Set([
+  "channel_create",
+  "channel_update",
+  "channel_delete",
+  "channel_overwrite",
+  "role_create",
+  "role_update",
+  "role_delete",
+  "permission_escalation",
+  "automod_change",
+  "guild_update"
+]);
+
+const RESTORE_ACTIONS = new Set([
+  // Backup restore is additive/non-destructive where possible. Permit only the
+  // audit actions the restore pipeline actually needs instead of suppressing
+  // every Security rule while a restore batch is running.
+  "channel_create",
+  "channel_update",
+  "channel_overwrite",
+  "role_create",
+  "role_update",
+  "permission_escalation",
+  "ban_add",
+  "automod_change",
+  "guild_update"
+]);
+
+export function maintenanceScopeAllows(
+  scope: MaintenanceScope,
+  action: string
+): boolean {
+  if (scope === "all") return true;
+  if (scope === "restore") return RESTORE_ACTIONS.has(action);
+  return DASHBOARD_EDIT_ACTIONS.has(action);
+}
+
 export async function hasMaintenanceLease(
   env: Env,
   guildId: string,
@@ -314,16 +351,7 @@ export async function hasMaintenanceLease(
     ORDER BY expires_at DESC
     LIMIT 5
   `).bind(guildId, actorId, Date.now()).all<{ scope: MaintenanceScope }>()).results;
-  for (const row of rows) {
-    if (row.scope === "all" || row.scope === "restore") return true;
-    if (
-      row.scope === "dashboard_edit" &&
-      ["channel_create", "channel_update", "channel_delete", "channel_overwrite",
-       "role_create", "role_update", "role_delete", "permission_escalation",
-       "automod_change", "guild_update"].includes(action)
-    ) return true;
-  }
-  return false;
+  return rows.some(row => maintenanceScopeAllows(row.scope, action));
 }
 
 export async function consumeBridgeNonce(

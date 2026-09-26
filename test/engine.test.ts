@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SETTINGS } from "../src/db";
+import { DEFAULT_SETTINGS, maintenanceScopeAllows } from "../src/db";
 import { classifyAuditAction, scoreUrl } from "../src/engine";
 import {
   buildLockdownOverwrites,
@@ -173,5 +173,42 @@ describe("Safety Baseline defaults", () => {
 
   it("uses at least Medium verification by default", () => {
     expect(DEFAULT_SETTINGS.safety.minimumVerificationLevel).toBeGreaterThanOrEqual(2);
+  });
+});
+
+
+describe("maintenance lease scope", () => {
+  it("allows only restore actions needed by the backup pipeline", () => {
+    for (const action of [
+      "channel_create",
+      "channel_update",
+      "channel_overwrite",
+      "role_create",
+      "role_update",
+      "permission_escalation",
+      "ban_add",
+      "automod_change",
+      "guild_update"
+    ]) {
+      expect(maintenanceScopeAllows("restore", action)).toBe(true);
+    }
+  });
+
+  it("does not turn restore into a broad Security bypass", () => {
+    for (const action of [
+      "channel_delete",
+      "role_delete",
+      "webhook",
+      "bot_add",
+      "member_prune",
+      "kick",
+      "integration_change"
+    ]) {
+      expect(maintenanceScopeAllows("restore", action)).toBe(false);
+    }
+  });
+
+  it("keeps explicit all-scope available for emergency administration", () => {
+    expect(maintenanceScopeAllows("all", "bot_add")).toBe(true);
   });
 });
