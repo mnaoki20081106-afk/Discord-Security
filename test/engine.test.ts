@@ -5,7 +5,8 @@ import {
   classifyAuditAction,
   fetchAuditBacklog,
   isSecurityBotSelfTarget,
-  scoreUrl
+  scoreUrl,
+  shouldSanctionActor
 } from "../src/engine";
 import { OrderedTaskLanes } from "../src/gateway";
 import { applyBridgeSecurityFloor, isConfiguredMainBot, isManualDashboardLockdown } from "../src/index";
@@ -642,5 +643,23 @@ describe("audit entry time", () => {
     const snowflake = ((BigInt(actionAt - 1420070400000) << 22n) + 7n).toString();
     expect(auditEntryCreatedAt(snowflake)).toBe(actionAt);
     expect(auditEntryCreatedAt("not-a-snowflake")).toBeNull();
+  });
+});
+
+describe("actor sanction safety boundary", () => {
+  it("destructive audit actions are the only actor-sanctioning class", () => {
+    expect(shouldSanctionActor("channel_delete")).toBe(true);
+    expect(shouldSanctionActor("role_delete")).toBe(true);
+    expect(shouldSanctionActor("kick")).toBe(true);
+    expect(shouldSanctionActor("ban_add")).toBe(true);
+    expect(shouldSanctionActor("member_prune")).toBe(true);
+
+    expect(shouldSanctionActor("channel_overwrite")).toBe(false);
+    expect(shouldSanctionActor("permission_escalation")).toBe(false);
+    expect(shouldSanctionActor("role_update")).toBe(false);
+    expect(shouldSanctionActor("channel_update")).toBe(false);
+    expect(shouldSanctionActor("guild_update")).toBe(false);
+    expect(shouldSanctionActor("webhook")).toBe(false);
+    expect(shouldSanctionActor("bot_add")).toBe(false);
   });
 });
