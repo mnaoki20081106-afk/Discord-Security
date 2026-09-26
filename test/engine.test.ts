@@ -115,3 +115,11 @@ describe("security threshold defaults", () => {
     expect(DEFAULT_SETTINGS.thresholds.memberPrune).toBeGreaterThanOrEqual(1);
   });
 });
+
+
+describe("managed service bot model", () => {
+  it("does not rely on globally trusting the Main Bot actor", () => {
+    expect(DEFAULT_SETTINGS.trustedUserIds).toEqual([]);
+    expect(DEFAULT_SETTINGS.allowedBotIds).toEqual([]);
+  });
+});

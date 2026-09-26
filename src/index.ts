@@ -7,6 +7,8 @@ import {
   getSecuritySettings,
   listExpiredLockdowns,
   listIncidents,
+  listManagedServiceBots,
+  registerManagedServiceBot,
   saveSecuritySettings
 } from "./db";
 import {
@@ -199,6 +201,7 @@ async function handleInternal(
     return json({
       configured: true,
       installed: Boolean(guild),
+      managedServiceBots: await listManagedServiceBots(env, guildId),
       inviteUrl:
         `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(env.DISCORD_APPLICATION_ID)}` +
         `&permissions=${permissions}&integration_type=0&scope=bot%20applications.commands`,
@@ -209,6 +212,20 @@ async function handleInternal(
         ? { active: true, expiresAt: lockdown.expiresAt, reason: lockdown.reason }
         : { active: false, expiresAt: null, reason: null }
     });
+  }
+
+  const serviceBots = url.pathname.match(/^\/internal\/guilds\/(\d+)\/service-bots$/);
+  if (serviceBots && request.method === "POST") {
+    const body = bodyText ? JSON.parse(bodyText) as { botId?: string; kind?: string } : {};
+    const botId = String(body.botId ?? "");
+    if (!/^\d+$/.test(botId)) return json({ error: "invalid_bot_id" }, 400);
+    await registerManagedServiceBot(
+      env,
+      serviceBots[1]!,
+      botId,
+      String(body.kind ?? "main")
+    );
+    return json({ ok: true }, 201);
   }
 
   const settingsMatch = url.pathname.match(/^\/internal\/guilds\/(\d+)\/settings$/);

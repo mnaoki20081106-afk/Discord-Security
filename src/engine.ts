@@ -11,6 +11,7 @@ import {
   getAuditCursor,
   getSecuritySettings,
   hasMaintenanceLease,
+  isManagedServiceBot,
   recordIncident
 } from "./db";
 import {
@@ -383,7 +384,10 @@ export class SecurityEngine {
     if (
       spec.key === "bot_add" &&
       entry.target_id &&
-      settings.allowedBotIds.includes(entry.target_id)
+      (
+        settings.allowedBotIds.includes(entry.target_id) ||
+        await isManagedServiceBot(this.env, guildId, entry.target_id)
+      )
     ) {
       return;
     }

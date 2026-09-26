@@ -107,7 +107,7 @@ Requests are signed with `SECURITY_BRIDGE_SECRET` and expire after 60 seconds.
 
 ### Maintenance leases
 
-The Main Bot is intentionally **not permanently whitelisted**.
+The Main Bot is intentionally **not permanently whitelisted**. Its bot ID is registered separately as a managed service bot so re-adding Main does not trigger Bot Guard, while destructive actions performed by Main are still monitored.
 
 When Main legitimately performs a destructive operation, Main requests a short-lived signed maintenance lease. Backup restore renews a short `restore` lease while a restore job is actually running.
 

@@ -49,6 +49,14 @@ CREATE TABLE IF NOT EXISTS bridge_nonces (
   expires_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS managed_service_bots (
+  guild_id TEXT NOT NULL,
+  bot_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(guild_id, bot_id)
+);
+
 CREATE TABLE IF NOT EXISTS processed_audit_entries (
   id TEXT PRIMARY KEY,
   guild_id TEXT NOT NULL,
@@ -463,4 +471,44 @@ export async function listExpiredLockdowns(env: Env): Promise<string[]> {
     "SELECT guild_id FROM lockdown_snapshots WHERE expires_at<=? LIMIT 20"
   ).bind(Date.now()).all<{ guild_id: string }>()).results;
   return rows.map(row => row.guild_id);
+}
+
+
+export async function registerManagedServiceBot(
+  env: Env,
+  guildId: string,
+  botId: string,
+  kind = "main"
+): Promise<void> {
+  await ensureSchema(env);
+  await env.DB.prepare(`
+    INSERT INTO managed_service_bots(guild_id,bot_id,kind,updated_at)
+    VALUES(?,?,?,?)
+    ON CONFLICT(guild_id,bot_id) DO UPDATE SET
+      kind=excluded.kind,
+      updated_at=excluded.updated_at
+  `).bind(guildId,botId,kind.slice(0,32),Date.now()).run();
+}
+
+export async function isManagedServiceBot(
+  env: Env,
+  guildId: string,
+  botId: string
+): Promise<boolean> {
+  await ensureSchema(env);
+  const row = await env.DB.prepare(
+    "SELECT bot_id FROM managed_service_bots WHERE guild_id=? AND bot_id=? LIMIT 1"
+  ).bind(guildId,botId).first();
+  return Boolean(row);
+}
+
+export async function listManagedServiceBots(
+  env: Env,
+  guildId: string
+): Promise<Array<{botId:string;kind:string}>> {
+  await ensureSchema(env);
+  const rows=(await env.DB.prepare(
+    "SELECT bot_id,kind FROM managed_service_bots WHERE guild_id=? ORDER BY updated_at DESC"
+  ).bind(guildId).all<{bot_id:string;kind:string}>()).results;
+  return rows.map(row=>({botId:row.bot_id,kind:row.kind}));
 }
