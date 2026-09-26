@@ -19,4 +19,6 @@ jobs:
       - name: Dependency security audit
         run: npm audit --audit-level=moderate
       - run: npm run typecheck
+      - name: Bundle Security Worker with Wrangler
+        run: npx wrangler deploy --dry-run --outdir .worker-dist
       - run: npm test
