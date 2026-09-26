@@ -59,3 +59,48 @@ describe("dangerous permission detection", () => {
     expect(dangerousPermissionAdded((1n << 3n).toString(), "0")).toBe(false);
   });
 });
+
+
+describe("lockdown safety", () => {
+  it("preserves unrelated permission bits while blocking dangerous activity", () => {
+    const viewChannel = 1n << 10n;
+    const sendMessages = 1n << 11n;
+    const result = buildLockdownOverwrites("100", [
+      {
+        id: "200",
+        type: 0,
+        allow: (viewChannel | sendMessages).toString(),
+        deny: "0"
+      }
+    ]);
+    const role = result.find(item => item.id === "200")!;
+    expect(BigInt(role.allow) & viewChannel).toBe(viewChannel);
+    expect(BigInt(role.allow) & sendMessages).toBe(0n);
+  });
+
+  it("does not duplicate an existing everyone overwrite", () => {
+    const result = buildLockdownOverwrites("100", [
+      { id: "100", type: 0, allow: "0", deny: "0" }
+    ]);
+    expect(result.filter(item => item.id === "100" && item.type === 0)).toHaveLength(1);
+  });
+});
+
+describe("URL allowlist safety", () => {
+  it("allows subdomains of explicitly allowed domains", () => {
+    const settings = {
+      ...DEFAULT_SETTINGS,
+      allowedDomains: ["example.com"],
+      blockedDomains: []
+    };
+    expect(scoreUrl(new URL("https://login.example.com/account"), settings)).toBe(0);
+  });
+
+  it("raises risk for URLs containing embedded credentials", () => {
+    const score = scoreUrl(
+      new URL("https://discord-login:secret@evil.example/verify/nitro"),
+      DEFAULT_SETTINGS
+    );
+    expect(score).toBeGreaterThanOrEqual(50);
+  });
+});
