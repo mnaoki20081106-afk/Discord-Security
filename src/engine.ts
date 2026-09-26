@@ -6,6 +6,9 @@ import type {
   SecuritySettings
 } from "./types";
 import {
+  advanceAuditCursor,
+  claimAuditEntry,
+  getAuditCursor,
   getSecuritySettings,
   hasMaintenanceLease,
   recordIncident
@@ -338,8 +341,12 @@ export class SecurityEngine {
 
   async handleAudit(entry: AuditEntry): Promise<void> {
     const guildId = entry.guild_id;
+    if (!guildId || !entry.id) return;
+    if (!(await claimAuditEntry(this.env, guildId, entry.id))) return;
+    await advanceAuditCursor(this.env, guildId, entry.id);
+
     const actorId = entry.user_id ?? "";
-    if (!guildId || !actorId) return;
+    if (!actorId) return;
 
     const settings = await this.settings(guildId);
     if (!settings.enabled) return;
@@ -540,7 +547,10 @@ export class SecurityEngine {
       );
       const mentions =
         (event.mentions?.length ?? 0) + (event.mention_roles?.length ?? 0);
-      if (count >= settings.thresholds.spamMessages || mentions >= 8) {
+      if (
+        count >= settings.thresholds.spamMessages ||
+        mentions >= settings.thresholds.mentionLimit
+      ) {
         violation = "spam";
         metadata = { messageCount: count, mentions };
       }
@@ -608,4 +618,36 @@ export class SecurityEngine {
       violation !== "spam"
     );
   }
+
+  async reconcileGuild(guildId: string): Promise<void> {
+    const payload = await botJson<{ audit_log_entries?: AuditEntry[] }>(
+      this.env,
+      `/guilds/${guildId}/audit-logs?limit=50`
+    ).catch(() => null);
+    const entries = payload?.audit_log_entries ?? [];
+    if (!entries.length) return;
+
+    const newest = entries[0]!.id;
+    const cursor = await getAuditCursor(this.env, guildId);
+
+    // First sight of a guild establishes a baseline instead of punishing
+    // historical legitimate admin actions performed before Security connected.
+    if (!cursor) {
+      await advanceAuditCursor(this.env, guildId, newest);
+      return;
+    }
+
+    const fresh: AuditEntry[] = [];
+    for (const raw of entries) {
+      if (raw.id === cursor) break;
+      fresh.push({ ...raw, guild_id: raw.guild_id || guildId });
+    }
+
+    fresh.reverse();
+    for (const entry of fresh) {
+      await this.handleAudit(entry);
+    }
+    await advanceAuditCursor(this.env, guildId, newest);
+  }
+
 }
