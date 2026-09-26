@@ -114,7 +114,11 @@ export async function gatewayStatus(env: Env): Promise<GatewayStatus> {
 export class DiscordSecurityGateway {
   private socket: WebSocket | null = null;
   private plannedClose = false;
+  // Protocol/control frames must never wait behind Discord REST moderation
+  // calls. queue handles WebSocket state/heartbeats; eventQueue preserves
+  // dispatch order for slower SecurityEngine work.
   private queue: Promise<void> = Promise.resolve();
+  private eventQueue: Promise<void> = Promise.resolve();
   private readonly engine: SecurityEngine;
 
   constructor(
@@ -414,6 +418,15 @@ export class DiscordSecurityGateway {
     this.socket.send(JSON.stringify({ op: 1, d: stored.sequence }));
   }
 
+  private enqueueSecurityEvent(
+    label: string,
+    work: () => Promise<void>
+  ): void {
+    this.eventQueue = this.eventQueue
+      .then(work)
+      .catch(error => console.error(label, error));
+  }
+
   private async handleDispatch(
     payload: GatewayPayload,
     stored: StoredGatewayState
@@ -435,9 +448,10 @@ export class DiscordSecurityGateway {
         .filter(Boolean);
       await this.saveState(stored);
       for (const guildId of stored.guildIds) {
-        await this.engine.reconcileGuild(guildId).catch(error => {
-          console.error("initial audit reconcile failed", guildId, error);
-        });
+        this.enqueueSecurityEvent(
+          "initial audit reconcile failed " + guildId,
+          () => this.engine.reconcileGuild(guildId)
+        );
       }
       return;
     }
@@ -452,7 +466,10 @@ export class DiscordSecurityGateway {
       if (guildId && !stored.guildIds.includes(guildId)) {
         stored.guildIds.push(guildId);
         await this.saveState(stored);
-        await this.engine.reconcileGuild(guildId).catch(() => undefined);
+        this.enqueueSecurityEvent(
+          "guild create audit reconcile failed " + guildId,
+          () => this.engine.reconcileGuild(guildId)
+        );
       }
       return;
     }
@@ -465,15 +482,27 @@ export class DiscordSecurityGateway {
       return;
     }
     if (payload.t === "GUILD_AUDIT_LOG_ENTRY_CREATE") {
-      await this.engine.handleAudit(payload.d as AuditEntry);
+      const entry = payload.d as AuditEntry;
+      this.enqueueSecurityEvent(
+        "security audit event failed",
+        () => this.engine.handleAudit(entry)
+      );
       return;
     }
     if (payload.t === "GUILD_MEMBER_ADD") {
-      await this.engine.handleJoin(payload.d as DiscordMemberAddEvent);
+      const event = payload.d as DiscordMemberAddEvent;
+      this.enqueueSecurityEvent(
+        "security member event failed",
+        () => this.engine.handleJoin(event)
+      );
       return;
     }
     if (payload.t === "MESSAGE_CREATE") {
-      await this.engine.handleMessage(payload.d as DiscordMessageEvent);
+      const event = payload.d as DiscordMessageEvent;
+      this.enqueueSecurityEvent(
+        "security message event failed",
+        () => this.engine.handleMessage(event)
+      );
     }
   }
 }
