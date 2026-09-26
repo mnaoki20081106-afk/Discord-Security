@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS, maintenanceScopeAllows } from "../src/db";
-import { classifyAuditAction, fetchAuditBacklog, scoreUrl } from "../src/engine";
+import {
+  classifyAuditAction,
+  fetchAuditBacklog,
+  isSecurityBotSelfTarget,
+  scoreUrl
+} from "../src/engine";
 import { OrderedTaskLanes } from "../src/gateway";
 import { applyBridgeSecurityFloor, isConfiguredMainBot, isManualDashboardLockdown } from "../src/index";
 import {
@@ -142,6 +147,14 @@ describe("Main Bot trust boundary", () => {
   });
 });
 
+
+describe("Security Bot self-install boundary", () => {
+  it("never treats the Security Bot's own application ID as an unauthorized bot addition", () => {
+    const env = { DISCORD_APPLICATION_ID: "987654321098765432" };
+    expect(isSecurityBotSelfTarget(env, "987654321098765432")).toBe(true);
+    expect(isSecurityBotSelfTarget(env, "987654321098765433")).toBe(false);
+  });
+});
 
 describe("Discord audit action coverage", () => {
   it("maps destructive and privilege-sensitive audit actions", () => {
