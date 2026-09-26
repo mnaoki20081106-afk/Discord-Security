@@ -310,6 +310,41 @@ describe("audit backlog pagination", () => {
     expect(new URL(calls[1]!).searchParams.get("before")).toBe("2901");
   });
 
+
+  it("marks a partial pagination API failure without calling it overflow", async () => {
+    let call = 0;
+    vi.stubGlobal("fetch", async () => {
+      call += 1;
+      if (call === 1) {
+        return Response.json({
+          audit_log_entries: Array.from({ length: 100 }, (_, index) => ({
+            id: String(8000 - index),
+            guild_id: "123",
+            action_type: 12,
+            user_id: "999"
+          }))
+        });
+      }
+      return Response.json(
+        { message: "temporary audit API failure" },
+        { status: 500 }
+      );
+    });
+
+    const backlog = await fetchAuditBacklog(
+      { DISCORD_BOT_TOKEN: "test-token" } as never,
+      "123",
+      "older-cursor",
+      10
+    );
+
+    expect(backlog.pages).toBe(1);
+    expect(backlog.entries).toHaveLength(100);
+    expect(backlog.cursorFound).toBe(false);
+    expect(backlog.fetchFailed).toBe(true);
+    expect(backlog.truncated).toBe(false);
+  });
+
   it("marks a full page backlog as truncated when the cursor is still not found", async () => {
     let page = 0;
     vi.stubGlobal("fetch", async () => {
