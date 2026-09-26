@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SETTINGS } from "../src/db";
 import { scoreUrl } from "../src/engine";
+import {
+  buildLockdownOverwrites,
+  dangerousPermissionAdded
+} from "../src/discord";
 
 describe("URL risk scoring", () => {
   it("allows explicitly trusted Discord domains", () => {
@@ -21,5 +25,37 @@ describe("URL risk scoring", () => {
       blockedDomains: ["evil.example"]
     };
     expect(scoreUrl(new URL("https://sub.evil.example/path"), settings)).toBe(100);
+  });
+});
+
+
+describe("lockdown permissions", () => {
+  it("clears explicit allows and adds denies for role/member overwrites", () => {
+    const sendMessages = 1n << 11n;
+    const connect = 1n << 20n;
+    const result = buildLockdownOverwrites("100", [
+      { id: "200", type: 0, allow: sendMessages.toString(), deny: "0" },
+      { id: "300", type: 1, allow: connect.toString(), deny: "0" }
+    ]);
+
+    const role = result.find(item => item.id === "200")!;
+    const member = result.find(item => item.id === "300")!;
+    const everyone = result.find(item => item.id === "100" && item.type === 0)!;
+
+    expect(BigInt(role.allow) & sendMessages).toBe(0n);
+    expect(BigInt(role.deny) & sendMessages).toBe(sendMessages);
+    expect(BigInt(member.allow) & connect).toBe(0n);
+    expect(BigInt(member.deny) & connect).toBe(connect);
+    expect(BigInt(everyone.deny) & sendMessages).toBe(sendMessages);
+  });
+});
+
+describe("dangerous permission detection", () => {
+  it("detects newly granted Administrator", () => {
+    expect(dangerousPermissionAdded("0", (1n << 3n).toString())).toBe(true);
+  });
+
+  it("does not flag permission removal", () => {
+    expect(dangerousPermissionAdded((1n << 3n).toString(), "0")).toBe(false);
   });
 });
