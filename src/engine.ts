@@ -93,9 +93,11 @@ export function auditContainmentDecision(input: {
 }): { contain: boolean; lockdown: boolean } {
   const threshold=Math.max(1,input.thresholdValue);
   const destructiveMinimum=
-    input.action==="channel_delete"||input.action==="role_delete"
-      ?3
-      :threshold;
+    input.action==="channel_delete" ? 5 :
+    input.action==="role_delete" ? 4 :
+    input.action==="kick" ? 8 :
+    input.action==="ban_add" ? 6 :
+    threshold;
   const destructiveBurst=
     isDestructiveAuditAction(input.action) &&
     input.count>=Math.max(threshold,destructiveMinimum);
@@ -410,6 +412,7 @@ export class SecurityEngine {
   private youngJoinWindows = new Map<string, number[]>();
   private severeContentWindows = new Map<string, SevereContentEvent[]>();
   private raidModeUntil = new Map<string, number>();
+  private raidSuspicionLogUntil = new Map<string, number>();
   private raidLockdownUntil = new Map<string, number>();
   private contentOutbreakCooldown = new Map<string, number>();
   private sanctionCooldown = new Map<string, number>();
@@ -599,15 +602,22 @@ export class SecurityEngine {
       data: detail
     });
 
+    const enforcementText=!enforcing
+      ?"Audit onlyのため記録のみ行い、自動処置は実行しません。"
+      :sanctionActor&&lockdown
+        ?"実行者の隔離とLockdownを実行します。"
+        :sanctionActor
+          ?"実行者を隔離します。"
+          :lockdown
+            ?"対象への局所的な対処とLockdownを実行します。"
+            :"対象への局所的な対処のみ実行し、実行者の隔離やLockdownは行いません。";
     await sendSecurityLog(
       this.env,
       guildId,
       settings,
       "Security Incident",
       `<@${actorId}> の **${spec.key}** を検知しました。\n` +
-      (enforcing
-        ? "危険権限の剥奪・隔離・Lockdownを安全設定に従って実行します。"
-        : "Audit onlyのため記録のみ行い、自動処置は実行しません。"),
+      enforcementText,
       true
     );
 
@@ -878,18 +888,19 @@ export class SecurityEngine {
       youngJoins:youngHistory.length,
       raidJoins:settings.thresholds.raidJoins
     });
-    const raidAlreadyActive=(this.raidModeUntil.get(event.guild_id)??0)>now;
+    const suspicionLogReady=
+      (this.raidSuspicionLogUntil.get(event.guild_id)??0)<=now;
 
-    if(confidence.suspicious&&!raidAlreadyActive){
-      this.raidModeUntil.set(
+    if(confidence.suspicious&&suspicionLogReady){
+      this.raidSuspicionLogUntil.set(
         event.guild_id,
-        now + settings.response.lockdownMinutes * 60_000
+        now + settings.thresholds.raidWindowSeconds * 1000
       );
       await recordIncident(this.env,{
         guildId:event.guild_id,
         actorId:null,
         kind:confidence.confirmed?"raid":"raid_suspected",
-        severity:confidence.confirmed?"critical":"high",
+        severity:confidence.confirmed?"critical":"medium",
         summary:
           `${settings.thresholds.raidWindowSeconds}秒で${history.length}人の参加を検知`+
           `（新規アカウント ${youngHistory.length}人）`,
@@ -906,21 +917,24 @@ export class SecurityEngine {
       );
     }
 
-    if(
-      confidence.confirmed &&
-      (this.raidLockdownUntil.get(event.guild_id)??0)<=now
-    ){
-      this.raidLockdownUntil.set(
+    if(confidence.confirmed){
+      this.raidModeUntil.set(
         event.guild_id,
         now + settings.response.lockdownMinutes * 60_000
       );
-      if(settings.mode==="enforce"&&settings.response.autoLockdown){
-        await enterLockdown(
-          this.env,
+      if((this.raidLockdownUntil.get(event.guild_id)??0)<=now){
+        this.raidLockdownUntil.set(
           event.guild_id,
-          settings.response.lockdownMinutes,
-          "confirmed join raid"
-        ).catch(() => false);
+          now + settings.response.lockdownMinutes * 60_000
+        );
+        if(settings.mode==="enforce"&&settings.response.autoLockdown){
+          await enterLockdown(
+            this.env,
+            event.guild_id,
+            settings.response.lockdownMinutes,
+            "confirmed join raid"
+          ).catch(() => false);
+        }
       }
     }
 
@@ -1254,16 +1268,10 @@ export class SecurityEngine {
         "Gateway切断中の監査ログが追跡上限を超えました。未確認の管理操作が残る可能性があるため、安全側へ倒します。",
         true
       );
-      if (settings.mode === "enforce" && settings.response.autoLockdown) {
-        await enterLockdown(
-          this.env,
-          guildId,
-          settings.response.lockdownMinutes,
-          "audit backlog overflow"
-        ).catch(error =>
-          console.error("audit backlog emergency lockdown failed", guildId, error)
-        );
-      }
+      // Missing audit history is an observability problem, not proof of an
+      // attack. Never lock a guild solely because the backlog exceeded the
+      // reconciliation window; wait for concrete hostile evidence.
+
     }
 
     const fresh = [...backlog.entries].reverse();
