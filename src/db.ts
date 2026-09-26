@@ -48,6 +48,20 @@ CREATE TABLE IF NOT EXISTS bridge_nonces (
   nonce TEXT PRIMARY KEY,
   expires_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS processed_audit_entries (
+  id TEXT PRIMARY KEY,
+  guild_id TEXT NOT NULL,
+  processed_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS processed_audit_entries_time_idx
+ON processed_audit_entries(processed_at);
+
+CREATE TABLE IF NOT EXISTS audit_cursors (
+  guild_id TEXT PRIMARY KEY,
+  last_entry_id TEXT,
+  updated_at INTEGER NOT NULL
+);
 `;
 
 let initPromise: Promise<void> | null = null;
@@ -106,6 +120,7 @@ export const DEFAULT_SETTINGS: SecuritySettings = {
     raidWindowSeconds: 12,
     spamMessages: 6,
     spamWindowSeconds: 8,
+    mentionLimit: 8,
     linkBurst: 3,
     linkWindowSeconds: 20,
     minAccountAgeHours: 24
@@ -313,8 +328,58 @@ export async function cleanExpired(env: Env): Promise<void> {
   const now = Date.now();
   await env.DB.batch([
     env.DB.prepare("DELETE FROM maintenance_leases WHERE expires_at<?").bind(now),
-    env.DB.prepare("DELETE FROM bridge_nonces WHERE expires_at<?").bind(now)
+    env.DB.prepare("DELETE FROM bridge_nonces WHERE expires_at<?").bind(now),
+    env.DB.prepare("DELETE FROM processed_audit_entries WHERE processed_at<?")
+      .bind(now - 24 * 60 * 60_000)
   ]);
+}
+
+export async function claimAuditEntry(
+  env: Env,
+  guildId: string,
+  entryId: string
+): Promise<boolean> {
+  await ensureSchema(env);
+  const result = await env.DB.prepare(
+    "INSERT OR IGNORE INTO processed_audit_entries(id,guild_id,processed_at) VALUES(?,?,?)"
+  ).bind(entryId, guildId, Date.now()).run();
+  return (result.meta.changes ?? 0) > 0;
+}
+
+export async function getAuditCursor(
+  env: Env,
+  guildId: string
+): Promise<string | null> {
+  await ensureSchema(env);
+  const row = await env.DB.prepare(
+    "SELECT last_entry_id FROM audit_cursors WHERE guild_id=?"
+  ).bind(guildId).first<{ last_entry_id: string | null }>();
+  return row?.last_entry_id ?? null;
+}
+
+export async function advanceAuditCursor(
+  env: Env,
+  guildId: string,
+  entryId: string
+): Promise<void> {
+  await ensureSchema(env);
+  const current = await getAuditCursor(env, guildId);
+  let shouldAdvance = !current;
+  if (current) {
+    try {
+      shouldAdvance = BigInt(entryId) > BigInt(current);
+    } catch {
+      shouldAdvance = entryId !== current;
+    }
+  }
+  if (!shouldAdvance) return;
+  await env.DB.prepare(`
+    INSERT INTO audit_cursors(guild_id,last_entry_id,updated_at)
+    VALUES(?,?,?)
+    ON CONFLICT(guild_id) DO UPDATE SET
+      last_entry_id=excluded.last_entry_id,
+      updated_at=excluded.updated_at
+  `).bind(guildId, entryId, Date.now()).run();
 }
 
 export type LockdownSnapshot = {
