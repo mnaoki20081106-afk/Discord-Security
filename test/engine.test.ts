@@ -15,6 +15,7 @@ import { OrderedTaskLanes } from "../src/gateway";
 import { applyBridgeSecurityFloor, isConfiguredMainBot, isManualDashboardLockdown } from "../src/index";
 import {
   buildLockdownOverwrites,
+  buildManagedBotRecoveryOverwrites,
   dangerousPermissionAdded,
   patchChannelOverwrites,
   roleIsStrictlyAbove
@@ -917,5 +918,32 @@ describe("raid confidence policy", () => {
       .toEqual({suspicious:true,confirmed:true});
     expect(raidConfidence({joins:16,youngJoins:0,raidJoins:8}))
       .toEqual({suspicious:true,confirmed:true});
+  });
+});
+
+
+describe("Main Bot channel recovery overwrite", () => {
+  it("preserves unrelated overwrites and restores only the dashboard access mask", () => {
+    const repaired = buildManagedBotRecoveryOverwrites([
+      { id: "guild", type: 0, allow: "64", deny: "2048" },
+      { id: "main", type: 1, allow: "64", deny: String(1024n | 16n | 268435456n) }
+    ], "main");
+
+    expect(repaired.find(item => item.id === "guild")).toEqual({
+      id: "guild",
+      type: 0,
+      allow: "64",
+      deny: "2048"
+    });
+
+    const main = repaired.find(item => item.id === "main" && item.type === 1);
+    expect(main).toBeTruthy();
+    const allow = BigInt(main!.allow);
+    const deny = BigInt(main!.deny);
+    for (const bit of [16n,1024n,2048n,8192n,16384n,32768n,65536n,268435456n]) {
+      expect((allow & bit) === bit).toBe(true);
+      expect((deny & bit) === 0n).toBe(true);
+    }
+    expect((allow & 64n) === 64n).toBe(true);
   });
 });
