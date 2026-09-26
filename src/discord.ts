@@ -235,15 +235,18 @@ export async function rollbackRolePermissions(
   return response.ok;
 }
 
+type DiscordOverwrite = {
+  id: string;
+  type: number;
+  allow: string;
+  deny: string;
+};
+
 type DiscordChannel = {
   id: string;
   type: number;
-  permission_overwrites?: Array<{
-    id: string;
-    type: number;
-    allow: string;
-    deny: string;
-  }>;
+  parent_id?: string | null;
+  permission_overwrites?: DiscordOverwrite[];
 };
 
 const SEND_MESSAGES = 1n << 11n;
@@ -262,6 +265,47 @@ const LOCKDOWN_DENY =
   CREATE_PRIVATE_THREADS |
   SEND_MESSAGES_IN_THREADS;
 
+export function buildLockdownOverwrites(
+  guildId: string,
+  current: DiscordOverwrite[]
+): DiscordOverwrite[] {
+  const next = current.map(item => {
+    const allow = BigInt(item.allow || "0") & ~LOCKDOWN_DENY;
+    const deny = BigInt(item.deny || "0") | LOCKDOWN_DENY;
+    return {
+      id: item.id,
+      type: item.type,
+      allow: allow.toString(),
+      deny: deny.toString()
+    };
+  });
+
+  if (!next.some(item => item.id === guildId && item.type === 0)) {
+    next.push({
+      id: guildId,
+      type: 0,
+      allow: "0",
+      deny: LOCKDOWN_DENY.toString()
+    });
+  }
+  return next;
+}
+
+function canonicalOverwrites(items: DiscordOverwrite[]): string {
+  return JSON.stringify(
+    [...items]
+      .map(item => ({
+        id: item.id,
+        type: item.type,
+        allow: String(item.allow || "0"),
+        deny: String(item.deny || "0")
+      }))
+      .sort((a, b) =>
+        a.type !== b.type ? a.type - b.type : a.id.localeCompare(b.id)
+      )
+  );
+}
+
 export async function enterLockdown(
   env: Env,
   guildId: string,
@@ -270,23 +314,36 @@ export async function enterLockdown(
 ): Promise<boolean> {
   const existing = await getLockdownSnapshot(env, guildId);
   if (existing) return false;
+
   const channels = await botJson<DiscordChannel[]>(
     env,
     `/guilds/${guildId}/channels`
   );
-  const snapshot = channels
-    .filter(channel => [0, 2, 5, 13, 15, 16].includes(channel.type))
-    .map(channel => {
-      const overwrite = channel.permission_overwrites?.find(
-        item => item.id === guildId && item.type === 0
-      );
-      return {
-        channelId: channel.id,
-        hadOverwrite: Boolean(overwrite),
-        allow: overwrite?.allow ?? "0",
-        deny: overwrite?.deny ?? "0"
-      };
-    });
+  const categories = new Map(
+    channels
+      .filter(channel => channel.type === 4)
+      .map(channel => [channel.id, channel] as const)
+  );
+
+  const targets = channels.filter(channel => {
+    if (channel.type === 4) return true;
+    if (![0, 2, 5, 13, 15, 16].includes(channel.type)) return false;
+    if (!channel.parent_id) return true;
+    const parent = categories.get(channel.parent_id);
+    if (!parent) return true;
+    return canonicalOverwrites(channel.permission_overwrites ?? []) !==
+      canonicalOverwrites(parent.permission_overwrites ?? []);
+  });
+
+  const snapshot = targets.map(channel => ({
+    channelId: channel.id,
+    permissionOverwrites: (channel.permission_overwrites ?? []).map(item => ({
+      id: item.id,
+      type: item.type,
+      allow: String(item.allow || "0"),
+      deny: String(item.deny || "0")
+    }))
+  }));
 
   await putLockdownSnapshot(env, {
     guildId,
@@ -297,15 +354,14 @@ export async function enterLockdown(
   });
 
   for (const item of snapshot) {
-    const deny = (BigInt(item.deny) | LOCKDOWN_DENY).toString();
-    await botFetch(env, `/channels/${item.channelId}/permissions/${guildId}`, {
-      method: "PUT",
+    const permission_overwrites = buildLockdownOverwrites(
+      guildId,
+      item.permissionOverwrites
+    );
+    await botFetch(env, `/channels/${item.channelId}`, {
+      method: "PATCH",
       headers: { "X-Audit-Log-Reason": `Discord Security Lockdown: ${reason}` },
-      body: JSON.stringify({
-        type: 0,
-        allow: item.allow,
-        deny
-      })
+      body: JSON.stringify({ permission_overwrites })
     }).catch(() => undefined);
   }
   return true;
@@ -317,23 +373,15 @@ export async function exitLockdown(
 ): Promise<boolean> {
   const snapshot = await getLockdownSnapshot(env, guildId);
   if (!snapshot) return false;
+
   for (const item of snapshot.channels) {
-    if (item.hadOverwrite) {
-      await botFetch(env, `/channels/${item.channelId}/permissions/${guildId}`, {
-        method: "PUT",
-        headers: { "X-Audit-Log-Reason": "Discord Security Lockdown ended" },
-        body: JSON.stringify({
-          type: 0,
-          allow: item.allow,
-          deny: item.deny
-        })
-      }).catch(() => undefined);
-    } else {
-      await botFetch(env, `/channels/${item.channelId}/permissions/${guildId}`, {
-        method: "DELETE",
-        headers: { "X-Audit-Log-Reason": "Discord Security Lockdown ended" }
-      }).catch(() => undefined);
-    }
+    await botFetch(env, `/channels/${item.channelId}`, {
+      method: "PATCH",
+      headers: { "X-Audit-Log-Reason": "Discord Security Lockdown ended" },
+      body: JSON.stringify({
+        permission_overwrites: item.permissionOverwrites
+      })
+    }).catch(() => undefined);
   }
   await deleteLockdownSnapshot(env, guildId);
   return true;
