@@ -133,6 +133,8 @@ export const DEFAULT_SETTINGS: SecuritySettings = {
     mentionLimit: 8,
     linkBurst: 3,
     linkWindowSeconds: 20,
+    severeContentUsers: 3,
+    severeContentWindowSeconds: 30,
     minAccountAgeHours: 24
   },
   response: {

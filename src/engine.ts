@@ -58,6 +58,7 @@ type ActionSpec = {
 };
 
 type WeightedAction = { at: number; weight: number; key: ActionKey };
+type SevereContentEvent = { at: number; userId: string };
 
 const ACTION_SPECS: Record<number, ActionSpec> = {
   1: { key: "guild_update", threshold: "guildUpdate", weight: 5, module: "guildGuard" },
@@ -171,7 +172,9 @@ export class SecurityEngine {
   private messageWindows = new Map<string, number[]>();
   private linkWindows = new Map<string, number[]>();
   private joinWindows = new Map<string, number[]>();
+  private severeContentWindows = new Map<string, SevereContentEvent[]>();
   private raidModeUntil = new Map<string, number>();
+  private contentOutbreakCooldown = new Map<string, number>();
   private sanctionCooldown = new Map<string, number>();
   private settingsCache = new Map<string, { value: SecuritySettings; until: number }>();
   private ownerCache = new Map<string, { ownerId: string | null; until: number }>();
@@ -588,6 +591,76 @@ export class SecurityEngine {
     return history.length;
   }
 
+  private severeContentActors(
+    guildId: string,
+    userId: string,
+    seconds: number
+  ): number {
+    const now = Date.now();
+    const history = (this.severeContentWindows.get(guildId) ?? [])
+      .filter(item => now - item.at <= seconds * 1000);
+    history.push({ at: now, userId });
+    this.severeContentWindows.set(guildId, history);
+    return new Set(history.map(item => item.userId)).size;
+  }
+
+  private async maybeContainContentOutbreak(
+    guildId: string,
+    userId: string,
+    settings: SecuritySettings,
+    violation: string
+  ): Promise<void> {
+    if (violation !== "phishing_url" && violation !== "dangerous_attachment") {
+      return;
+    }
+    const distinctActors = this.severeContentActors(
+      guildId,
+      userId,
+      settings.thresholds.severeContentWindowSeconds
+    );
+    if (distinctActors < settings.thresholds.severeContentUsers) return;
+
+    const now = Date.now();
+    if ((this.contentOutbreakCooldown.get(guildId) ?? 0) > now) return;
+    this.contentOutbreakCooldown.set(
+      guildId,
+      now + settings.thresholds.severeContentWindowSeconds * 1000
+    );
+
+    await recordIncident(this.env, {
+      guildId,
+      actorId: null,
+      kind: "content_outbreak",
+      severity: "critical",
+      summary:
+        `${settings.thresholds.severeContentWindowSeconds}秒以内に` +
+        `${distinctActors}人から重大な危険投稿を検知`,
+      data: {
+        distinctActors,
+        trigger: violation
+      }
+    });
+
+    await sendSecurityLog(
+      this.env,
+      guildId,
+      settings,
+      "Coordinated Content Attack",
+      `複数アカウントによる重大な危険投稿を検知しました。\n` +
+      `Actors: **${distinctActors}** / Window: **${settings.thresholds.severeContentWindowSeconds}s**`,
+      true
+    );
+
+    if (settings.mode === "enforce" && settings.response.autoLockdown) {
+      await enterLockdown(
+        this.env,
+        guildId,
+        settings.response.lockdownMinutes,
+        "coordinated content attack"
+      ).catch(() => false);
+    }
+  }
+
   async handleMessage(event: DiscordMessageEvent): Promise<void> {
     if (!event.guild_id || event.author.bot) return;
     const guildId = event.guild_id;
@@ -681,6 +754,13 @@ export class SecurityEngine {
       `<@${event.author.id}> の投稿を **${violation}** として遮断しました。\n` +
       "本文や添付ファイル本体はSecurity Logへ保存していません。",
       violation !== "spam"
+    );
+
+    await this.maybeContainContentOutbreak(
+      guildId,
+      event.author.id,
+      settings,
+      violation
     );
   }
 

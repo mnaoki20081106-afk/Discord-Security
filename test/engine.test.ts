@@ -233,3 +233,15 @@ describe("URL policy precedence", () => {
     expect(scoreUrl(new URL("https://cdn.evil.example/file"), settings)).toBe(100);
   });
 });
+
+
+describe("coordinated content defaults", () => {
+  it("requires multiple distinct actors before server-wide containment", () => {
+    expect(DEFAULT_SETTINGS.thresholds.severeContentUsers).toBeGreaterThanOrEqual(2);
+  });
+
+  it("uses a short burst window for coordinated phishing or malware attacks", () => {
+    expect(DEFAULT_SETTINGS.thresholds.severeContentWindowSeconds).toBeGreaterThanOrEqual(5);
+    expect(DEFAULT_SETTINGS.thresholds.severeContentWindowSeconds).toBeLessThanOrEqual(300);
+  });
+});

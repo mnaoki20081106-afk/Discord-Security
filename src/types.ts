@@ -41,6 +41,8 @@ export type SecurityThresholds = {
   mentionLimit: number;
   linkBurst: number;
   linkWindowSeconds: number;
+  severeContentUsers: number;
+  severeContentWindowSeconds: number;
   minAccountAgeHours: number;
 };
 

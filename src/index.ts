@@ -162,6 +162,8 @@ function settingsPatch(body: unknown): Partial<SecuritySettings> {
       mentionLimit: [2, 100],
       linkBurst: [2, 50],
       linkWindowSeconds: [2, 300],
+      severeContentUsers: [2, 50],
+      severeContentWindowSeconds: [5, 300],
       minAccountAgeHours: [0, 87600]
     };
     const normalized: Record<string, number> = {};

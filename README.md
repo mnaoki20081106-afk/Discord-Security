@@ -83,6 +83,7 @@ This is **incident containment**, not the server backup system. Full backup/rest
 - Phishing URL risk heuristics
 - Per-guild allow/block domains
 - Dangerous executable/script attachment blocking
+- Cross-account severe-content burst detection: coordinated phishing/malware from multiple accounts can trigger emergency lockdown
 
 Security incidents intentionally store **metadata, not message bodies or attachment files**.
 
