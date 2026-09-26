@@ -189,6 +189,10 @@ async function handleInternal(
   if (overview && request.method === "GET") {
     const guildId = overview[1]!;
     const managedServiceBots = await listManagedServiceBots(env, guildId);
+    const managedBotIds = [
+      ...managedServiceBots.map(item => item.botId),
+      ...(env.MAIN_BOT_APPLICATION_ID?.trim() ? [env.MAIN_BOT_APPLICATION_ID.trim()] : [])
+    ].filter((id, index, all) => all.indexOf(id) === index);
     const [settings, status, incidents, lockdown, guild, capabilities] = await Promise.all([
       getSecuritySettings(env, guildId),
       gatewayStatus(env),
@@ -198,7 +202,7 @@ async function handleInternal(
       getSecurityCapabilities(
         env,
         guildId,
-        managedServiceBots.map(item => item.botId)
+        managedBotIds
       )
     ]);
     const permissions = (
@@ -209,6 +213,7 @@ async function handleInternal(
       configured: true,
       installed: Boolean(guild),
       managedServiceBots,
+      mainBotApplicationIdConfigured: Boolean(env.MAIN_BOT_APPLICATION_ID?.trim()),
       capabilities,
       inviteUrl:
         `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(env.DISCORD_APPLICATION_ID)}` +

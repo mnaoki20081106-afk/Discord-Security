@@ -130,3 +130,10 @@ describe("maximum protection policy", () => {
     expect(dangerousPermissionAdded("0", (1n << 28n).toString())).toBe(true);
   });
 });
+
+
+describe("Main Bot trust boundary", () => {
+  it("keeps Main out of the default trusted actor list", () => {
+    expect(DEFAULT_SETTINGS.trustedUserIds).not.toContain("main-bot");
+  });
+});

@@ -87,6 +87,7 @@ export interface Env {
   SECURITY_GATEWAY: DurableObjectNamespace;
   DISCORD_BOT_TOKEN: string;
   DISCORD_APPLICATION_ID: string;
+  MAIN_BOT_APPLICATION_ID?: string;
   SECURITY_BRIDGE_SECRET: string;
 }
 

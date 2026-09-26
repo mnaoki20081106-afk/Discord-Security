@@ -386,6 +386,7 @@ export class SecurityEngine {
       entry.target_id &&
       (
         settings.allowedBotIds.includes(entry.target_id) ||
+        entry.target_id === this.env.MAIN_BOT_APPLICATION_ID?.trim() ||
         await isManagedServiceBot(this.env, guildId, entry.target_id)
       )
     ) {

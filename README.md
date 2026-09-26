@@ -120,8 +120,11 @@ Set these on the **Discord-Security Worker**:
 ```text
 DISCORD_BOT_TOKEN
 DISCORD_APPLICATION_ID
+MAIN_BOT_APPLICATION_ID
 SECURITY_BRIDGE_SECRET
 ```
+
+`MAIN_BOT_APPLICATION_ID` is the existing Main Bot application/client ID. It allows that specific bot to be added to a newly restored guild without permanently trusting its actions.
 
 Use a random `SECURITY_BRIDGE_SECRET` of at least 32 bytes/characters and set the **same value** on the Main Worker.
 
