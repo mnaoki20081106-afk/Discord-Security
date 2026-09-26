@@ -116,6 +116,7 @@ export function auditContainmentDecision(input: {
   pruneMembers: number;
   highRiskBotAdd: boolean;
   selfPrivilegeGrant: boolean;
+  actorIsBot?: boolean;
 }): { contain: boolean; lockdown: boolean } {
   const threshold=Math.max(1,input.thresholdValue);
   const destructiveMinimum=
@@ -133,7 +134,12 @@ export function auditContainmentDecision(input: {
       input.crossActionThreshold+6,
       Math.ceil(input.crossActionThreshold*1.5)
     );
+  // Configuration-heavy bots routinely create/update roles, channels,
+  // overwrites, webhooks and integrations in short bursts. Those operations
+  // are reversible and must not globally lock a guild merely because the
+  // actor is a bot. Destructive actions are still evaluated below.
   const nonDestructiveBurst=
+    !input.actorIsBot &&
     !isDestructiveAuditAction(input.action) &&
     input.count>=Math.max(6,threshold*3);
   const pruneBurst=
@@ -142,14 +148,14 @@ export function auditContainmentDecision(input: {
 
   const repeatedSecurityTamper=
     input.securitySelfOverwrite && input.count>=3;
-  const repeatedRiskyBotAdd=
-    input.highRiskBotAdd && input.count>=2;
+  // A newly-added bot having moderation/admin permissions is not proof that
+  // the bot is malicious. Keep bot-add risk as review-only evidence and judge
+  // the bot by what it subsequently does.
   const repeatedSelfPrivilegeGrant=
     input.selfPrivilegeGrant && input.count>=3;
 
   const contain=
     repeatedSecurityTamper ||
-    repeatedRiskyBotAdd ||
     repeatedSelfPrivilegeGrant ||
     pruneBurst ||
     destructiveBurst ||
@@ -542,6 +548,23 @@ export class SecurityEngine {
     }
   }
 
+  private async actorBotState(
+    guildId: string,
+    actorId: string,
+    settings: SecuritySettings
+  ): Promise<{ isBot: boolean; protectedBot: boolean }> {
+    const member = await getMember(this.env, guildId, actorId);
+    const isBot = Boolean(member?.user?.bot);
+    if (!isBot) return { isBot: false, protectedBot: false };
+
+    const protectedBot =
+      actorId === this.env.MAIN_BOT_APPLICATION_ID?.trim() ||
+      settings.allowedBotIds.includes(actorId) ||
+      await isManagedServiceBot(this.env, guildId, actorId);
+
+    return { isBot: true, protectedBot };
+  }
+
   private async trusted(
     guildId: string,
     actorId: string,
@@ -589,6 +612,14 @@ export class SecurityEngine {
 
     const member = await getMember(this.env, guildId, actorId);
     if (member?.user?.bot) {
+      const protectedBot =
+        actorId === this.env.MAIN_BOT_APPLICATION_ID?.trim() ||
+        settings.allowedBotIds.includes(actorId) ||
+        await isManagedServiceBot(this.env, guildId, actorId);
+      // Main/managed/explicitly-allowed service bots are infrastructure.
+      // Never kick them automatically. If one is compromised, destructive
+      // activity is contained with guild Lockdown instead.
+      if (protectedBot) return;
       if (settings.response.kickMaliciousBots) {
         await kickMember(
           this.env,
@@ -781,6 +812,17 @@ export class SecurityEngine {
       return;
     }
 
+    const actorBotState = await this.actorBotState(guildId, actorId, settings);
+    // Protected service bots are allowed to perform ordinary reversible
+    // administration without feeding anti-nuke windows. Destructive actions
+    // remain visible so a compromised service bot can still trigger Lockdown.
+    if (
+      actorBotState.protectedBot &&
+      !isDestructiveAuditAction(spec.key)
+    ) {
+      return;
+    }
+
     const thresholdValue = Number(settings.thresholds[spec.threshold]);
     const count = this.windowCount(
       guildId + ":" + actorId + ":" + spec.key,
@@ -818,7 +860,8 @@ export class SecurityEngine {
       securitySelfOverwrite,
       pruneMembers,
       highRiskBotAdd,
-      selfPrivilegeGrant
+      selfPrivilegeGrant,
+      actorIsBot: actorBotState.isBot
     });
 
     if (!decision.contain) {
@@ -885,20 +928,6 @@ export class SecurityEngine {
     }
 
     if (
-      spec.key === "bot_add" &&
-      entry.target_id &&
-      settings.mode === "enforce" &&
-      settings.response.kickMaliciousBots
-    ) {
-      await kickMember(
-        this.env,
-        guildId,
-        entry.target_id,
-        "Discord Security: high-confidence unauthorized bot addition"
-      ).catch(() => false);
-    }
-
-    if (
       spec.key === "webhook" &&
       entry.action_type === 50 &&
       entry.target_id &&
@@ -907,14 +936,16 @@ export class SecurityEngine {
       await deleteWebhook(this.env, entry.target_id).catch(() => false);
     }
 
-    const sanctionActor = shouldAutoSanctionActor({
-      action:spec.key,
-      count,
-      thresholdValue,
-      crossActionScore:profile.score,
-      crossActionThreshold:settings.thresholds.crossActionScore,
-      destructiveKinds:profile.destructiveKinds
-    });
+    const sanctionActor =
+      !actorBotState.protectedBot &&
+      shouldAutoSanctionActor({
+        action:spec.key,
+        count,
+        thresholdValue,
+        crossActionScore:profile.score,
+        crossActionThreshold:settings.thresholds.crossActionScore,
+        destructiveKinds:profile.destructiveKinds
+      });
     await this.trigger(guildId, actorId, settings, spec, {
       auditEntryId: entry.id,
       actionType: entry.action_type,
@@ -925,7 +956,9 @@ export class SecurityEngine {
       membersRemoved: pruneMembers || undefined,
       securitySelfOverwrite,
       highRiskBotAdd,
-      selfPrivilegeGrant
+      selfPrivilegeGrant,
+      actorIsBot: actorBotState.isBot,
+      protectedBotActor: actorBotState.protectedBot
     }, sanctionActor, decision.lockdown);
   }
 
