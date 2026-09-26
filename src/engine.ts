@@ -94,6 +94,15 @@ export function isSecurityBotSelfTarget(
   return Boolean(applicationId && targetId === applicationId);
 }
 
+export function auditEntryCreatedAt(entryId: string): number | null {
+  try {
+    const snowflake = BigInt(entryId);
+    return Number((snowflake >> 22n) + 1420070400000n);
+  } catch {
+    return null;
+  }
+}
+
 export function classifyAuditAction(actionType: number): string | null {
   return ACTION_SPECS[actionType]?.key ?? null;
 }
@@ -389,7 +398,8 @@ export class SecurityEngine {
     actorId: string,
     settings: SecuritySettings,
     spec: ActionSpec,
-    detail: Record<string, unknown>
+    detail: Record<string, unknown>,
+    sanctionActor = true
   ): Promise<void> {
     const enforcing = settings.mode === "enforce";
     const summary = enforcing
@@ -416,7 +426,9 @@ export class SecurityEngine {
       true
     );
 
-    await this.sanction(guildId, actorId, settings, spec.key);
+    if (sanctionActor) {
+      await this.sanction(guildId, actorId, settings, spec.key);
+    }
 
     if (settings.response.autoLockdown && settings.mode === "enforce") {
       await enterLockdown(
@@ -517,7 +529,16 @@ export class SecurityEngine {
     }
 
     if (!spec || !settings.modules[spec.module]) return;
-    if (await hasMaintenanceLease(this.env, guildId, actorId, spec.key)) return;
+    const actionAtMs = auditEntryCreatedAt(entry.id) ?? Date.now();
+    if (
+      await hasMaintenanceLease(
+        this.env,
+        guildId,
+        actorId,
+        spec.key,
+        actionAtMs
+      )
+    ) return;
 
     if (
       spec.key === "bot_add" &&
@@ -609,6 +630,13 @@ export class SecurityEngine {
       count >= thresholdValue ||
       score >= settings.thresholds.crossActionScore
     ) {
+      const sanctionActor = new Set([
+        "channel_delete",
+        "role_delete",
+        "member_kick",
+        "member_ban",
+        "member_prune"
+      ]).has(spec.key);
       await this.trigger(guildId, actorId, settings, spec, {
         auditEntryId: entry.id,
         actionType: entry.action_type,
@@ -617,7 +645,7 @@ export class SecurityEngine {
         crossActionScore: score,
         membersRemoved: pruneMembers || undefined,
         securitySelfOverwrite
-      });
+      }, sanctionActor);
     }
   }
 
