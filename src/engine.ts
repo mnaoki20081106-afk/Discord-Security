@@ -24,6 +24,7 @@ import {
   enterLockdown,
   getGuildOwnerId,
   getMember,
+  humanMemberOutranksSecurityById,
   kickMember,
   rollbackRolePermissions,
   sendSecurityLog,
@@ -572,6 +573,29 @@ export class SecurityEngine {
     return { isBot: Boolean(member.user?.bot), protectedBot: false };
   }
 
+  private async humanOperatorProtection(
+    guildId: string,
+    actorId: string
+  ): Promise<"protected" | "unprotected" | "unknown"> {
+    let owner = this.ownerCache.get(guildId);
+    if (!owner || owner.until <= Date.now()) {
+      owner = {
+        ownerId: await getGuildOwnerId(this.env, guildId),
+        until: Date.now() + 60_000
+      };
+      this.ownerCache.set(guildId, owner);
+    }
+    if (owner.ownerId === actorId) return "protected";
+
+    const outranksSecurity = await humanMemberOutranksSecurityById(
+      this.env,
+      guildId,
+      actorId
+    );
+    if (outranksSecurity === null) return "unknown";
+    return outranksSecurity ? "protected" : "unprotected";
+  }
+
   private async trusted(
     guildId: string,
     actorId: string,
@@ -614,9 +638,6 @@ export class SecurityEngine {
 
     if (settings.mode === "audit") return;
 
-    const ownerId = await getGuildOwnerId(this.env, guildId);
-    if (ownerId === actorId) return;
-
     const protectedBot =
       actorId === this.env.MAIN_BOT_APPLICATION_ID?.trim() ||
       settings.allowedBotIds.includes(actorId) ||
@@ -627,7 +648,10 @@ export class SecurityEngine {
     if (protectedBot) return;
 
     const member = await getMember(this.env, guildId, actorId);
-    if (member?.user?.bot) {
+    // Missing identity/hierarchy data is not sufficient evidence for a
+    // personal sanction. Server-wide containment can still happen separately.
+    if (!member) return;
+    if (member.user?.bot) {
       if (settings.response.kickMaliciousBots) {
         await kickMember(
           this.env,
@@ -638,6 +662,9 @@ export class SecurityEngine {
       }
       return;
     }
+
+    const humanProtection = await this.humanOperatorProtection(guildId, actorId);
+    if (humanProtection !== "unprotected") return;
 
     if (settings.response.stripDangerousRoles) {
       await stripDangerousRoles(this.env, guildId, actorId).catch(() => 0);
@@ -657,14 +684,22 @@ export class SecurityEngine {
     spec: ActionSpec,
     detail: Record<string, unknown>,
     sanctionActor = true,
-    lockdown = true
+    lockdown = true,
+    protectedHumanOperator = false,
+    actorHierarchyUnknown = false
   ): Promise<void> {
     const enforcing = settings.mode === "enforce";
-    const summary = enforcing
-      ? sanctionActor
-        ? `${spec.key} の高信頼度な異常操作を検知し、実行者を隔離しました`
-        : `${spec.key} の高信頼度な異常操作を検知し、対象を封じ込めました`
-      : `${spec.key} の異常操作を検知しました（Audit only・自動処置なし）`;
+    const summary = protectedHumanOperator
+      ? lockdown && enforcing
+        ? `${spec.key} を上位人間管理者から検知し、本人への自動制裁なしでLockdownしました`
+        : `${spec.key} を上位人間管理者から検知しました（本人への自動制裁なし）`
+      : actorHierarchyUnknown
+        ? `${spec.key} を検知しました（実行者の階層確認に失敗したため個人制裁を保留）`
+        : enforcing
+          ? sanctionActor
+            ? `${spec.key} の高信頼度な異常操作を検知し、実行者を隔離しました`
+            : `${spec.key} の高信頼度な異常操作を検知し、対象を封じ込めました`
+          : `${spec.key} の異常操作を検知しました（Audit only・自動処置なし）`;
     await recordIncident(this.env, {
       guildId,
       actorId,
@@ -676,13 +711,21 @@ export class SecurityEngine {
 
     const enforcementText=!enforcing
       ?"Audit onlyのため記録のみ行い、自動処置は実行しません。"
-      :sanctionActor&&lockdown
-        ?"実行者の隔離とLockdownを実行します。"
-        :sanctionActor
-          ?"実行者を隔離します。"
-          :lockdown
-            ?"対象への局所的な対処とLockdownを実行します。"
-            :"対象への局所的な対処のみ実行し、実行者の隔離やLockdownは行いません。";
+      :protectedHumanOperator
+        ? lockdown
+          ?"人間管理者はBotより上位の保護対象です。本人へのKick/BAN/Timeout/ロール剥奪は行わず、破壊継続を止めるためLockdownのみ実行します。"
+          :"人間管理者はBotより上位の保護対象です。設定の巻き戻しや本人への自動制裁は行わず、記録・通知のみ行います。"
+        :actorHierarchyUnknown
+          ? lockdown
+            ?"実行者の階層を確認できないため個人制裁・設定巻き戻しを保留し、Lockdownのみ実行します。"
+            :"実行者の階層を確認できないため個人制裁・設定巻き戻しを保留します。"
+          :sanctionActor&&lockdown
+            ?"実行者の隔離とLockdownを実行します。"
+            :sanctionActor
+              ?"実行者を隔離します。"
+              :lockdown
+                ?"対象への局所的な対処とLockdownを実行します。"
+                :"対象への局所的な対処のみ実行し、実行者の隔離やLockdownは行いません。";
     await sendSecurityLog(
       this.env,
       guildId,
@@ -821,6 +864,12 @@ export class SecurityEngine {
     }
 
     const actorBotState = await this.actorBotState(guildId, actorId, settings);
+    const humanProtection = actorBotState.protectedBot
+      ? "unprotected"
+      : await this.humanOperatorProtection(guildId, actorId);
+    const protectedHumanOperator = humanProtection === "protected";
+    const actorHierarchyUnknown = humanProtection === "unknown";
+
     // Protected service bots are allowed to perform ordinary reversible
     // administration without feeding anti-nuke windows. Destructive actions
     // remain visible so a compromised service bot can still trigger Lockdown.
@@ -903,6 +952,8 @@ export class SecurityEngine {
 
     // Targeted remediation only happens after the high-confidence gate.
     if (
+      !protectedHumanOperator &&
+      !actorHierarchyUnknown &&
       permissionChange.escalation &&
       entry.target_id &&
       permissionChange.oldPermissions &&
@@ -917,6 +968,8 @@ export class SecurityEngine {
     }
 
     if (
+      !protectedHumanOperator &&
+      !actorHierarchyUnknown &&
       dangerousMemberRoles.length &&
       entry.target_id &&
       settings.mode === "enforce"
@@ -936,6 +989,8 @@ export class SecurityEngine {
     }
 
     if (
+      !protectedHumanOperator &&
+      !actorHierarchyUnknown &&
       spec.key === "webhook" &&
       entry.action_type === 50 &&
       entry.target_id &&
@@ -946,6 +1001,8 @@ export class SecurityEngine {
 
     const sanctionActor =
       !actorBotState.protectedBot &&
+      !protectedHumanOperator &&
+      !actorHierarchyUnknown &&
       shouldAutoSanctionActor({
         action:spec.key,
         count,
@@ -966,8 +1023,14 @@ export class SecurityEngine {
       highRiskBotAdd,
       selfPrivilegeGrant,
       actorIsBot: actorBotState.isBot,
-      protectedBotActor: actorBotState.protectedBot
-    }, sanctionActor, decision.lockdown);
+      protectedBotActor: actorBotState.protectedBot,
+      protectedHumanOperator,
+      actorHierarchyUnknown
+    },
+    sanctionActor,
+    decision.lockdown && (!protectedHumanOperator || isDestructiveAuditAction(spec.key)),
+    protectedHumanOperator,
+    actorHierarchyUnknown);
   }
 
   async handleJoin(event: DiscordMemberAddEvent): Promise<void> {
