@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS, maintenanceScopeAllows } from "../src/db";
 import {
+  auditEntryCreatedAt,
   classifyAuditAction,
   fetchAuditBacklog,
   isSecurityBotSelfTarget,
