@@ -699,9 +699,9 @@ describe("high-confidence containment policy", () => {
 
     expect(auditContainmentDecision({
       action:"channel_overwrite",
-      count:8,
+      count:12,
       thresholdValue:4,
-      crossActionScore:40,
+      crossActionScore:60,
       crossActionThreshold:12,
       destructiveKinds:0,
       securitySelfOverwrite:false,
@@ -739,12 +739,40 @@ describe("high-confidence containment policy", () => {
     })).toEqual({contain:true,lockdown:false});
   });
 
+  it("ordinary destructive cleanup stays below the automatic floor", () => {
+    expect(auditContainmentDecision({
+      action:"channel_delete",
+      count:4,
+      thresholdValue:2,
+      crossActionScore:28,
+      crossActionThreshold:12,
+      destructiveKinds:1,
+      securitySelfOverwrite:false,
+      pruneMembers:0,
+      highRiskBotAdd:false,
+      selfPrivilegeGrant:false
+    })).toEqual({contain:false,lockdown:false});
+
+    expect(auditContainmentDecision({
+      action:"kick",
+      count:5,
+      thresholdValue:5,
+      crossActionScore:20,
+      crossActionThreshold:12,
+      destructiveKinds:1,
+      securitySelfOverwrite:false,
+      pruneMembers:0,
+      highRiskBotAdd:false,
+      selfPrivilegeGrant:false
+    })).toEqual({contain:false,lockdown:false});
+  });
+
   it("locks down confirmed destructive bursts", () => {
     expect(auditContainmentDecision({
       action:"channel_delete",
-      count:2,
+      count:5,
       thresholdValue:2,
-      crossActionScore:14,
+      crossActionScore:35,
       crossActionThreshold:12,
       destructiveKinds:1,
       securitySelfOverwrite:false,
@@ -757,7 +785,7 @@ describe("high-confidence containment policy", () => {
       action:"kick",
       count:1,
       thresholdValue:5,
-      crossActionScore:12,
+      crossActionScore:18,
       crossActionThreshold:12,
       destructiveKinds:2,
       securitySelfOverwrite:false,
