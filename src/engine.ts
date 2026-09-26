@@ -19,6 +19,7 @@ import {
   botJson,
   dangerousPermissionAdded,
   deleteMessage,
+  enforceGuildSafetyBaseline,
   deleteWebhook,
   enterLockdown,
   getGuildOwnerId,
@@ -376,6 +377,21 @@ export class SecurityEngine {
 
     const settings = await this.settings(guildId);
     if (!settings.enabled) return;
+
+    // Safety Baseline is policy, not an Anti-Nuke exemption. Even a trusted
+    // moderator lowering the server's explicit-media or verification setting
+    // is corrected while the baseline is enabled.
+    if (
+      entry.action_type === 1 &&
+      entry.changes?.some(change =>
+        change.key === "explicit_content_filter" ||
+        change.key === "verification_level"
+      )
+    ) {
+      await enforceGuildSafetyBaseline(this.env, guildId, settings)
+        .catch(error => console.error("safety baseline enforcement failed", guildId, error));
+    }
+
     if (await this.trusted(guildId, actorId, settings)) return;
 
     const permissionChange = this.rolePermissionChange(entry);
@@ -667,6 +683,12 @@ export class SecurityEngine {
   }
 
   async reconcileGuild(guildId: string): Promise<void> {
+    const settings = await this.settings(guildId);
+    if (settings.enabled) {
+      await enforceGuildSafetyBaseline(this.env, guildId, settings)
+        .catch(error => console.error("scheduled safety baseline failed", guildId, error));
+    }
+
     const payload = await botJson<{ audit_log_entries?: AuditEntry[] }>(
       this.env,
       `/guilds/${guildId}/audit-logs?limit=50`

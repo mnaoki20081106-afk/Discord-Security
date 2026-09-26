@@ -144,6 +144,10 @@ export const DEFAULT_SETTINGS: SecuritySettings = {
     deleteUnsafeMessages: true,
     quarantineRaidJoins: true
   },
+  safety: {
+    enforceExplicitContentFilter: true,
+    minimumVerificationLevel: 2
+  },
   logChannelId: null,
   trustedUserIds: [],
   trustedRoleIds: [],
@@ -160,6 +164,7 @@ function mergeSettings(input: Partial<SecuritySettings> | null): SecuritySetting
     modules: { ...DEFAULT_SETTINGS.modules, ...(value.modules ?? {}) },
     thresholds: { ...DEFAULT_SETTINGS.thresholds, ...(value.thresholds ?? {}) },
     response: { ...DEFAULT_SETTINGS.response, ...(value.response ?? {}) },
+    safety: { ...DEFAULT_SETTINGS.safety, ...(value.safety ?? {}) },
     trustedUserIds: Array.isArray(value.trustedUserIds) ? value.trustedUserIds : [],
     trustedRoleIds: Array.isArray(value.trustedRoleIds) ? value.trustedRoleIds : [],
     allowedBotIds: Array.isArray(value.allowedBotIds) ? value.allowedBotIds : [],
@@ -199,7 +204,8 @@ export async function saveSecuritySettings(
     ...patch,
     modules: { ...current.modules, ...(patch.modules ?? {}) },
     thresholds: { ...current.thresholds, ...(patch.thresholds ?? {}) },
-    response: { ...current.response, ...(patch.response ?? {}) }
+    response: { ...current.response, ...(patch.response ?? {}) },
+    safety: { ...current.safety, ...(patch.safety ?? {}) }
   });
   await env.DB.prepare(`
     INSERT INTO security_settings(guild_id, config, updated_at)

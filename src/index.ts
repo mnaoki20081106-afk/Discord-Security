@@ -15,6 +15,7 @@ import {
   botJson,
   enterLockdown,
   exitLockdown,
+  getGuildSafetyStatus,
   getSecurityCapabilities
 } from "./discord";
 import {
@@ -122,6 +123,19 @@ function settingsPatch(body: unknown): Partial<SecuritySettings> {
   }
   if (input.modules && typeof input.modules === "object") patch.modules = input.modules;
   if (input.response && typeof input.response === "object") patch.response = input.response;
+  if (input.safety && typeof input.safety === "object") {
+    const raw = input.safety as Partial<SecuritySettings["safety"]>;
+    patch.safety = {
+      enforceExplicitContentFilter:
+        typeof raw.enforceExplicitContentFilter === "boolean"
+          ? raw.enforceExplicitContentFilter
+          : true,
+      minimumVerificationLevel: Math.max(
+        0,
+        Math.min(4, Math.trunc(Number(raw.minimumVerificationLevel ?? 2)))
+      )
+    };
+  }
   if (input.thresholds && typeof input.thresholds === "object") {
     const limits: Record<string, [number, number]> = {
       actionWindowSeconds: [2, 120],
@@ -193,8 +207,8 @@ async function handleInternal(
       ...managedServiceBots.map(item => item.botId),
       ...(env.MAIN_BOT_APPLICATION_ID?.trim() ? [env.MAIN_BOT_APPLICATION_ID.trim()] : [])
     ].filter((id, index, all) => all.indexOf(id) === index);
-    const [settings, status, incidents, lockdown, guild, capabilities] = await Promise.all([
-      getSecuritySettings(env, guildId),
+    const settings = await getSecuritySettings(env, guildId);
+    const [status, incidents, lockdown, guild, capabilities, safetyStatus] = await Promise.all([
       gatewayStatus(env),
       listIncidents(env, guildId, Number(url.searchParams.get("limit") ?? 30)),
       getLockdownSnapshot(env, guildId),
@@ -203,7 +217,8 @@ async function handleInternal(
         env,
         guildId,
         managedBotIds
-      )
+      ),
+      getGuildSafetyStatus(env, guildId, settings).catch(() => null)
     ]);
     const permissions = (
       128n | 32n | 268435456n | 16n | 536870912n | 8192n |
@@ -215,6 +230,7 @@ async function handleInternal(
       managedServiceBots,
       mainBotApplicationIdConfigured: Boolean(env.MAIN_BOT_APPLICATION_ID?.trim()),
       capabilities,
+      safetyStatus,
       inviteUrl:
         `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(env.DISCORD_APPLICATION_ID)}` +
         `&permissions=${permissions}&integration_type=0&scope=bot%20applications.commands`,

@@ -72,6 +72,9 @@ This is **incident containment**, not the server backup system. Full backup/rest
 
 ### Raid and content protection
 
+- Safety Baseline keeps Discord's server Explicit Content Filter at **ALL_MEMBERS**
+- Configurable minimum Discord Verification Level (default: Medium)
+- Safety diagnostics report server MFA level, raid-alert state and safety-alert channel presence
 - Join-rate raid detection
 - Temporary quarantine/timeouts for raid arrivals
 - Account-age signal during raids
@@ -82,6 +85,8 @@ This is **incident containment**, not the server backup system. Full backup/rest
 - Dangerous executable/script attachment blocking
 
 Security incidents intentionally store **metadata, not message bodies or attachment files**.
+
+Discord's native explicit-media scanning is deliberately used as a separate safety layer instead of copying suspect media into this bot's storage. Age-restricted channels and Discord's own detection limitations still apply.
 
 For illegal sexual content or other severe platform-safety violations, this project does not attempt to build a private CSAM image collection or copy suspect media into logs. Discord's own safety/reporting systems remain essential; the bot's role is rapid containment and moderation support.
 

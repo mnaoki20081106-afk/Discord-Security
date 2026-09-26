@@ -164,3 +164,14 @@ describe("URL allowlist boundary", () => {
     )).toBeGreaterThanOrEqual(50);
   });
 });
+
+
+describe("Safety Baseline defaults", () => {
+  it("enforces Discord explicit-media scanning for all members by default", () => {
+    expect(DEFAULT_SETTINGS.safety.enforceExplicitContentFilter).toBe(true);
+  });
+
+  it("uses at least Medium verification by default", () => {
+    expect(DEFAULT_SETTINGS.safety.minimumVerificationLevel).toBeGreaterThanOrEqual(2);
+  });
+});

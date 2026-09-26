@@ -44,6 +44,11 @@ export type SecurityThresholds = {
   minAccountAgeHours: number;
 };
 
+export type SecuritySafety = {
+  enforceExplicitContentFilter: boolean;
+  minimumVerificationLevel: number;
+};
+
 export type SecurityResponse = {
   stripDangerousRoles: boolean;
   kickMaliciousBots: boolean;
@@ -61,6 +66,7 @@ export type SecuritySettings = {
   modules: SecurityModules;
   thresholds: SecurityThresholds;
   response: SecurityResponse;
+  safety: SecuritySafety;
   logChannelId: string | null;
   trustedUserIds: string[];
   trustedRoleIds: string[];
@@ -90,6 +96,15 @@ export interface Env {
   MAIN_BOT_APPLICATION_ID?: string;
   SECURITY_BRIDGE_SECRET: string;
 }
+
+export type GuildSafetyStatus = {
+  explicitContentFilter: number;
+  verificationLevel: number;
+  mfaLevel: number;
+  raidAlertsEnabled: boolean;
+  safetyAlertsChannelConfigured: boolean;
+  baselineReady: boolean;
+};
 
 export type SecurityCapabilities = {
   administrator: boolean;

@@ -1,4 +1,9 @@
-import type { Env, SecurityCapabilities, SecuritySettings } from "./types";
+import type {
+  Env,
+  GuildSafetyStatus,
+  SecurityCapabilities,
+  SecuritySettings
+} from "./types";
 import {
   deleteLockdownSnapshot,
   getLockdownSnapshot,
@@ -50,6 +55,77 @@ export async function botJson<T>(
   }
   if (response.status === 204) return undefined as T;
   return await response.json() as T;
+}
+
+type DiscordGuildSafety = {
+  explicit_content_filter?: number;
+  verification_level?: number;
+  mfa_level?: number;
+  features?: string[];
+  safety_alerts_channel_id?: string | null;
+};
+
+export async function getGuildSafetyStatus(
+  env: Env,
+  guildId: string,
+  settings: SecuritySettings
+): Promise<GuildSafetyStatus> {
+  const guild = await botJson<DiscordGuildSafety>(
+    env,
+    `/guilds/${guildId}`
+  );
+  const explicitContentFilter = Number(guild.explicit_content_filter ?? 0);
+  const verificationLevel = Number(guild.verification_level ?? 0);
+  const minimumVerificationLevel = Math.max(
+    0,
+    Math.min(4, Math.trunc(settings.safety.minimumVerificationLevel))
+  );
+  return {
+    explicitContentFilter,
+    verificationLevel,
+    mfaLevel: Number(guild.mfa_level ?? 0),
+    raidAlertsEnabled: !(guild.features ?? []).includes("RAID_ALERTS_DISABLED"),
+    safetyAlertsChannelConfigured: Boolean(guild.safety_alerts_channel_id),
+    baselineReady:
+      (!settings.safety.enforceExplicitContentFilter || explicitContentFilter >= 2) &&
+      verificationLevel >= minimumVerificationLevel
+  };
+}
+
+export async function enforceGuildSafetyBaseline(
+  env: Env,
+  guildId: string,
+  settings: SecuritySettings
+): Promise<GuildSafetyStatus> {
+  const guild = await botJson<DiscordGuildSafety>(env, `/guilds/${guildId}`);
+  const patch: Record<string, number> = {};
+  const currentFilter = Number(guild.explicit_content_filter ?? 0);
+  const currentVerification = Number(guild.verification_level ?? 0);
+  const minimumVerification = Math.max(
+    0,
+    Math.min(4, Math.trunc(settings.safety.minimumVerificationLevel))
+  );
+
+  if (
+    settings.safety.enforceExplicitContentFilter &&
+    currentFilter < 2
+  ) patch.explicit_content_filter = 2;
+
+  if (currentVerification < minimumVerification) {
+    patch.verification_level = minimumVerification;
+  }
+
+  if (Object.keys(patch).length) {
+    await botJson(env, `/guilds/${guildId}`, {
+      method: "PATCH",
+      headers: {
+        "X-Audit-Log-Reason": "Discord Security: enforce server safety baseline"
+      },
+      body: JSON.stringify(patch)
+    });
+  }
+
+  return getGuildSafetyStatus(env, guildId, settings);
 }
 
 export async function sendSecurityLog(
