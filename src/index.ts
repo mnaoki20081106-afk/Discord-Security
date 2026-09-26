@@ -16,7 +16,8 @@ import {
   enterLockdown,
   exitLockdown,
   getGuildSafetyStatus,
-  getSecurityCapabilities
+  getSecurityCapabilities,
+  repairManagedBotChannelAccess
 } from "./discord";
 import {
   DiscordSecurityGateway,
@@ -451,6 +452,23 @@ async function handleInternal(
       scope as MaintenanceScope,
       Number(body.seconds ?? 30)
     ), 201);
+  }
+
+  const mainBotChannelRepair = url.pathname.match(
+    /^\/internal\/guilds\/(\d+)\/main-bot\/channels\/(\d+)\/access$/
+  );
+  if (mainBotChannelRepair && request.method === "POST") {
+    const mainBotId = String(env.MAIN_BOT_APPLICATION_ID ?? "").trim();
+    if (!/^\d+$/.test(mainBotId)) {
+      return json({ error: "main_bot_not_configured" }, 503);
+    }
+    const result = await repairManagedBotChannelAccess(
+      env,
+      mainBotChannelRepair[1]!,
+      mainBotId,
+      mainBotChannelRepair[2]!
+    );
+    return json({ ok: true, ...result });
   }
 
   const lockdown = url.pathname.match(
