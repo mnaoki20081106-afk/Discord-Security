@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS, maintenanceScopeAllows } from "../src/db";
-import { classifyAuditAction, scoreUrl } from "../src/engine";
+import { classifyAuditAction, fetchAuditBacklog, scoreUrl } from "../src/engine";
 import {
   buildLockdownOverwrites,
   dangerousPermissionAdded,
@@ -269,5 +269,74 @@ describe("lockdown Discord API error handling", () => {
         "test lockdown"
       )
     ).rejects.toMatchObject({ status: 403 });
+  });
+});
+
+
+describe("audit backlog pagination", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("paginates until the stored audit cursor is found", async () => {
+    const first = Array.from({ length: 100 }, (_, index) => ({
+      id: String(3000 - index),
+      guild_id: "123",
+      action_type: 12,
+      user_id: "999"
+    }));
+    const second = [
+      { id: "2000", guild_id: "123", action_type: 32, user_id: "999" },
+      { id: "cursor", guild_id: "123", action_type: 1, user_id: "999" }
+    ];
+    const calls: string[] = [];
+
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      calls.push(url.toString());
+      return Response.json({
+        audit_log_entries: calls.length === 1 ? first : second
+      });
+    });
+
+    const backlog = await fetchAuditBacklog(
+      { DISCORD_BOT_TOKEN: "test-token" } as never,
+      "123",
+      "cursor",
+      10
+    );
+
+    expect(backlog.cursorFound).toBe(true);
+    expect(backlog.truncated).toBe(false);
+    expect(backlog.pages).toBe(2);
+    expect(backlog.entries).toHaveLength(101);
+    expect(new URL(calls[1]!).searchParams.get("before")).toBe("2901");
+  });
+
+  it("marks a full page backlog as truncated when the cursor is still not found", async () => {
+    let page = 0;
+    vi.stubGlobal("fetch", async () => {
+      const start = 5000 - page++ * 100;
+      return Response.json({
+        audit_log_entries: Array.from({ length: 100 }, (_, index) => ({
+          id: String(start - index),
+          guild_id: "123",
+          action_type: 12,
+          user_id: "999"
+        }))
+      });
+    });
+
+    const backlog = await fetchAuditBacklog(
+      { DISCORD_BOT_TOKEN: "test-token" } as never,
+      "123",
+      "missing-cursor",
+      3
+    );
+
+    expect(backlog.cursorFound).toBe(false);
+    expect(backlog.truncated).toBe(true);
+    expect(backlog.pages).toBe(3);
+    expect(backlog.entries).toHaveLength(300);
   });
 });

@@ -166,6 +166,81 @@ function dangerousAttachment(filename: string | undefined): boolean {
   return DANGEROUS_EXTENSIONS.has(ext);
 }
 
+export type AuditBacklog = {
+  entries: AuditEntry[];
+  newestId: string | null;
+  cursorFound: boolean;
+  truncated: boolean;
+  pages: number;
+};
+
+export async function fetchAuditBacklog(
+  env: Env,
+  guildId: string,
+  cursor: string | null,
+  maxPages = 10
+): Promise<AuditBacklog> {
+  const fresh: AuditEntry[] = [];
+  let newestId: string | null = null;
+  let before: string | null = null;
+  let cursorFound = false;
+  let exhausted = false;
+  let pages = 0;
+
+  for (let page = 0; page < Math.max(1, maxPages); page++) {
+    const query = new URLSearchParams({ limit: "100" });
+    if (before) query.set("before", before);
+    const payload = await botJson<{ audit_log_entries?: AuditEntry[] }>(
+      env,
+      `/guilds/${guildId}/audit-logs?${query.toString()}`
+    ).catch(() => null);
+    if (!payload) break;
+
+    const entries = payload.audit_log_entries ?? [];
+    pages += 1;
+    if (!entries.length) {
+      exhausted = true;
+      break;
+    }
+    if (!newestId) newestId = entries[0]!.id;
+
+    // First sight establishes a baseline only. Historical actions from before
+    // Security was installed must not be punished.
+    if (!cursor) {
+      return {
+        entries: [],
+        newestId,
+        cursorFound: false,
+        truncated: false,
+        pages
+      };
+    }
+
+    for (const raw of entries) {
+      if (raw.id === cursor) {
+        cursorFound = true;
+        break;
+      }
+      fresh.push({ ...raw, guild_id: raw.guild_id || guildId });
+    }
+    if (cursorFound) break;
+
+    if (entries.length < 100) {
+      exhausted = true;
+      break;
+    }
+    before = entries[entries.length - 1]!.id;
+  }
+
+  return {
+    entries: fresh,
+    newestId,
+    cursorFound,
+    truncated: Boolean(cursor && !cursorFound && !exhausted && pages >= Math.max(1, maxPages)),
+    pages
+  };
+}
+
 export class SecurityEngine {
   private actionWindows = new Map<string, number[]>();
   private weightedActions = new Map<string, WeightedAction[]>();
@@ -771,34 +846,54 @@ export class SecurityEngine {
         .catch(error => console.error("scheduled safety baseline failed", guildId, error));
     }
 
-    const payload = await botJson<{ audit_log_entries?: AuditEntry[] }>(
-      this.env,
-      `/guilds/${guildId}/audit-logs?limit=50`
-    ).catch(() => null);
-    const entries = payload?.audit_log_entries ?? [];
-    if (!entries.length) return;
-
-    const newest = entries[0]!.id;
     const cursor = await getAuditCursor(this.env, guildId);
+    const backlog = await fetchAuditBacklog(this.env, guildId, cursor, 10);
+    if (!backlog.newestId) return;
 
     // First sight of a guild establishes a baseline instead of punishing
     // historical legitimate admin actions performed before Security connected.
     if (!cursor) {
-      await advanceAuditCursor(this.env, guildId, newest);
+      await advanceAuditCursor(this.env, guildId, backlog.newestId);
       return;
     }
 
-    const fresh: AuditEntry[] = [];
-    for (const raw of entries) {
-      if (raw.id === cursor) break;
-      fresh.push({ ...raw, guild_id: raw.guild_id || guildId });
+    if (backlog.truncated && settings.enabled) {
+      await recordIncident(this.env, {
+        guildId,
+        actorId: null,
+        kind: "audit_backlog_truncated",
+        severity: "critical",
+        summary: "Gateway切断中の監査ログが1000件を超えたため緊急封じ込めを実行",
+        data: {
+          pages: backlog.pages,
+          collectedEntries: backlog.entries.length
+        }
+      });
+      await sendSecurityLog(
+        this.env,
+        guildId,
+        settings,
+        "Audit Backlog Overflow",
+        "Gateway切断中の監査ログが追跡上限を超えました。未確認の管理操作が残る可能性があるため、安全側へ倒します。",
+        true
+      );
+      if (settings.mode === "enforce" && settings.response.autoLockdown) {
+        await enterLockdown(
+          this.env,
+          guildId,
+          settings.response.lockdownMinutes,
+          "audit backlog overflow"
+        ).catch(error =>
+          console.error("audit backlog emergency lockdown failed", guildId, error)
+        );
+      }
     }
 
-    fresh.reverse();
+    const fresh = [...backlog.entries].reverse();
     for (const entry of fresh) {
       await this.handleAudit(entry);
     }
-    await advanceAuditCursor(this.env, guildId, newest);
+    await advanceAuditCursor(this.env, guildId, backlog.newestId);
   }
 
 }
