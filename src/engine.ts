@@ -67,6 +67,32 @@ export function shouldSanctionActor(action: ActionKey): boolean {
   ]).has(action);
 }
 
+export function shouldAutoSanctionActor(input:{
+  action:ActionKey;
+  count:number;
+  thresholdValue:number;
+  crossActionScore:number;
+  crossActionThreshold:number;
+  destructiveKinds:number;
+}):boolean{
+  if(!shouldSanctionActor(input.action)) return false;
+  const floor=
+    input.action==="channel_delete" ? 10 :
+    input.action==="role_delete" ? 8 :
+    input.action==="kick" ? 15 :
+    input.action==="ban_add" ? 12 :
+    Number.POSITIVE_INFINITY;
+  const extremeSingleClass=
+    input.count>=Math.max(input.thresholdValue*2,floor);
+  const extremeMixed=
+    input.destructiveKinds>=3 &&
+    input.crossActionScore>=Math.max(
+      input.crossActionThreshold*2,
+      30
+    );
+  return extremeSingleClass||extremeMixed;
+}
+
 const DESTRUCTIVE_ACTIONS = new Set<ActionKey>([
   "channel_delete",
   "role_delete",
@@ -881,7 +907,14 @@ export class SecurityEngine {
       await deleteWebhook(this.env, entry.target_id).catch(() => false);
     }
 
-    const sanctionActor = shouldSanctionActor(spec.key);
+    const sanctionActor = shouldAutoSanctionActor({
+      action:spec.key,
+      count,
+      thresholdValue,
+      crossActionScore:profile.score,
+      crossActionThreshold:settings.thresholds.crossActionScore,
+      destructiveKinds:profile.destructiveKinds
+    });
     await this.trigger(guildId, actorId, settings, spec, {
       auditEntryId: entry.id,
       actionType: entry.action_type,
