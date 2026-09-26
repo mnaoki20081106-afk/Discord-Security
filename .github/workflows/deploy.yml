@@ -36,6 +36,94 @@ jobs:
       - name: Use project npm version
         run: npm install --global npm@11.20.0
 
+      - name: Normalize Cloudflare credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+
+          function unwrap(value) {
+            let v = String(value ?? "").trim();
+            if (
+              (v.startsWith('"') && v.endsWith('"')) ||
+              (v.startsWith("'") && v.endsWith("'"))
+            ) {
+              v = v.slice(1, -1).trim();
+            }
+            return v;
+          }
+
+          let token = unwrap(process.env.CLOUDFLARE_API_TOKEN);
+          token = token.replace(/^Bearer\s+/i, "").trim();
+          const accountId = unwrap(process.env.CLOUDFLARE_ACCOUNT_ID);
+
+          if (!token) {
+            console.error("::error::CLOUDFLARE_API_TOKEN is empty.");
+            process.exit(1);
+          }
+          if (
+            /\s/.test(token) ||
+            /authorization:|\bcurl\b|CLOUDFLARE_API_TOKEN=/i.test(token)
+          ) {
+            console.error(
+              "::error::CLOUDFLARE_API_TOKEN contains whitespace or copied command text. Store only the raw Cloudflare token value."
+            );
+            process.exit(1);
+          }
+          if (!accountId || /\s/.test(accountId)) {
+            console.error(
+              "::error::CLOUDFLARE_ACCOUNT_ID is empty or contains whitespace. Store only the raw account ID."
+            );
+            process.exit(1);
+          }
+
+          const format = token.startsWith("cfut_")
+            ? "user token"
+            : token.startsWith("cfat_")
+              ? "account token"
+              : "legacy token";
+          console.log(`Cloudflare credential syntax OK: ${format}, ${token.length} characters.`);
+
+          fs.appendFileSync(
+            process.env.GITHUB_ENV,
+            `CLOUDFLARE_API_TOKEN=${token}\nCLOUDFLARE_ACCOUNT_ID=${accountId}\n`,
+            { mode: 0o600 }
+          );
+          NODE
+
+      - name: Verify Cloudflare Worker access
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+          const token = process.env.CLOUDFLARE_API_TOKEN;
+          const url =
+            `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/services/discord-security`;
+
+          const response = await fetch(url, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+
+          let body = {};
+          try {
+            body = await response.json();
+          } catch {}
+
+          if (!response.ok) {
+            const errors = Array.isArray(body.errors)
+              ? body.errors.map(e => `${e.code ?? "?"}: ${e.message ?? "unknown error"}`).join("; ")
+              : "unknown Cloudflare API error";
+            console.error(
+              `::error::Cloudflare credential preflight failed (HTTP ${response.status}): ${errors}`
+            );
+            process.exit(1);
+          }
+
+          console.log("Cloudflare credential preflight succeeded for discord-security.");
+          NODE
+
       - name: Validate deployment credentials
         shell: bash
         run: |
