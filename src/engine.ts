@@ -146,7 +146,7 @@ export function isStrongSpam(input:{
   const repeated=
     input.messageCount>=input.spamMessages &&
     input.repeatedCount>=3;
-  const massMention=input.mentions>=Math.max(input.mentionLimit,10);
+  const massMention=input.mentions>=Math.max(input.mentionLimit*2,15);
   return input.messageCount>=burstFloor||repeated||massMention;
 }
 
@@ -1104,7 +1104,7 @@ export class SecurityEngine {
         deleteUnsafe=true;
         timeoutMinutes=settings.response.timeoutMinutes;
       }else if(
-        linkCount>=Math.max(settings.thresholds.linkBurst*2,6)
+        linkCount>=Math.max(settings.thresholds.linkBurst*3,10)
       ){
         violation="link_burst";
         metadata={
