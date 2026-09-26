@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SETTINGS } from "../src/db";
-import { scoreUrl } from "../src/engine";
+import { classifyAuditAction, scoreUrl } from "../src/engine";
 import {
   buildLockdownOverwrites,
   dangerousPermissionAdded
@@ -135,5 +135,32 @@ describe("maximum protection policy", () => {
 describe("Main Bot trust boundary", () => {
   it("keeps Main out of the default trusted actor list", () => {
     expect(DEFAULT_SETTINGS.trustedUserIds).not.toContain("main-bot");
+  });
+});
+
+
+describe("Discord audit action coverage", () => {
+  it("maps destructive and privilege-sensitive audit actions", () => {
+    expect(classifyAuditAction(12)).toBe("channel_delete");
+    expect(classifyAuditAction(13)).toBe("channel_overwrite");
+    expect(classifyAuditAction(15)).toBe("channel_overwrite");
+    expect(classifyAuditAction(21)).toBe("member_prune");
+    expect(classifyAuditAction(28)).toBe("bot_add");
+    expect(classifyAuditAction(32)).toBe("role_delete");
+    expect(classifyAuditAction(50)).toBe("webhook");
+    expect(classifyAuditAction(142)).toBe("automod_change");
+  });
+
+  it("ignores unsupported audit actions instead of inventing enforcement", () => {
+    expect(classifyAuditAction(9999)).toBeNull();
+  });
+});
+
+describe("URL allowlist boundary", () => {
+  it("does not trust lookalike parent domains", () => {
+    expect(scoreUrl(
+      new URL("https://discord.com.evil.example/login/nitro"),
+      DEFAULT_SETTINGS
+    )).toBeGreaterThanOrEqual(50);
   });
 });

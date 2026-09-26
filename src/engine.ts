@@ -84,6 +84,10 @@ const ACTION_SPECS: Record<number, ActionSpec> = {
   142: { key: "automod_change", threshold: "automodChange", weight: 11, module: "automodGuard", critical: true }
 };
 
+export function classifyAuditAction(actionType: number): string | null {
+  return ACTION_SPECS[actionType]?.key ?? null;
+}
+
 const SUSPICIOUS_TERMS = [
   "nitro", "gift", "claim", "airdrop", "wallet", "login", "verify",
   "steam", "discord", "support", "giveaway", "bonus", "reward"
