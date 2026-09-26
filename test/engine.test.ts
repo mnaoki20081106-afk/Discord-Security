@@ -212,3 +212,24 @@ describe("maintenance lease scope", () => {
     expect(maintenanceScopeAllows("all", "bot_add")).toBe(true);
   });
 });
+
+
+describe("URL policy precedence", () => {
+  it("lets an explicit block override an allow entry for the same domain", () => {
+    const settings = {
+      ...DEFAULT_SETTINGS,
+      allowedDomains: ["example.com"],
+      blockedDomains: ["example.com"]
+    };
+    expect(scoreUrl(new URL("https://example.com/login"), settings)).toBe(100);
+  });
+
+  it("lets a blocked parent domain cover its subdomains", () => {
+    const settings = {
+      ...DEFAULT_SETTINGS,
+      allowedDomains: [],
+      blockedDomains: ["evil.example"]
+    };
+    expect(scoreUrl(new URL("https://cdn.evil.example/file"), settings)).toBe(100);
+  });
+});

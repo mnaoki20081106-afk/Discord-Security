@@ -129,8 +129,10 @@ function extractUrls(content: string): URL[] {
 
 export function scoreUrl(url: URL, settings: SecuritySettings): number {
   const host = url.hostname.toLowerCase().replace(/\.$/, "");
-  if (settings.allowedDomains.some(domain => domainMatches(host, domain))) return 0;
+  // Explicit deny rules always override allow rules. This prevents a stale
+  // allowlist entry from neutralizing an emergency block pushed by admins.
   if (settings.blockedDomains.some(domain => domainMatches(host, domain))) return 100;
+  if (settings.allowedDomains.some(domain => domainMatches(host, domain))) return 0;
 
   let score = 0;
   // A host such as discord.com.evil.example is not a Discord subdomain.
