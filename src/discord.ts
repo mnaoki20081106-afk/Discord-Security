@@ -577,6 +577,79 @@ export async function patchChannelOverwrites(
   });
 }
 
+const MAIN_BOT_CHANNEL_RECOVERY_MASK =
+  (1n << 4n) |
+  (1n << 10n) |
+  (1n << 11n) |
+  (1n << 13n) |
+  (1n << 14n) |
+  (1n << 15n) |
+  (1n << 16n) |
+  (1n << 28n);
+
+export function buildManagedBotRecoveryOverwrites(
+  current: DiscordOverwrite[],
+  botId: string
+): DiscordOverwrite[] {
+  const existing = current.find(item => item.id === botId && item.type === 1);
+  let allow = BigInt(existing?.allow ?? "0");
+  let deny = BigInt(existing?.deny ?? "0");
+  allow |= MAIN_BOT_CHANNEL_RECOVERY_MASK;
+  deny &= ~MAIN_BOT_CHANNEL_RECOVERY_MASK;
+
+  return [
+    ...current
+      .filter(item => !(item.id === botId && item.type === 1))
+      .map(item => ({
+        id: item.id,
+        type: item.type,
+        allow: String(item.allow || "0"),
+        deny: String(item.deny || "0")
+      })),
+    {
+      id: botId,
+      type: 1,
+      allow: allow.toString(),
+      deny: deny.toString()
+    }
+  ];
+}
+
+export async function repairManagedBotChannelAccess(
+  env: Env,
+  guildId: string,
+  botId: string,
+  channelId: string
+): Promise<{ changed: boolean }> {
+  const member = await getMember(env, guildId, botId);
+  if (!member) {
+    throw new DiscordApiError(404, "Main Bot is not a member of this guild");
+  }
+
+  const channels = await botJson<DiscordChannel[]>(
+    env,
+    `/guilds/${guildId}/channels`
+  );
+  const channel = channels.find(item => item.id === channelId);
+  if (!channel) {
+    throw new DiscordApiError(404, "Channel not found in guild");
+  }
+
+  const current = channel.permission_overwrites ?? [];
+  const repaired = buildManagedBotRecoveryOverwrites(current, botId);
+  if (canonicalOverwrites(current) === canonicalOverwrites(repaired)) {
+    return { changed: false };
+  }
+
+  await patchChannelOverwrites(
+    env,
+    channelId,
+    repaired,
+    "Discord Security: repair Main Bot dashboard channel access"
+  );
+  return { changed: true };
+}
+
 export async function enterLockdown(
   env: Env,
   guildId: string,
