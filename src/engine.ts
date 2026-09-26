@@ -171,6 +171,7 @@ export type AuditBacklog = {
   newestId: string | null;
   cursorFound: boolean;
   truncated: boolean;
+  fetchFailed: boolean;
   pages: number;
 };
 
@@ -185,16 +186,22 @@ export async function fetchAuditBacklog(
   let before: string | null = null;
   let cursorFound = false;
   let exhausted = false;
+  let fetchFailed = false;
   let pages = 0;
 
   for (let page = 0; page < Math.max(1, maxPages); page++) {
     const query = new URLSearchParams({ limit: "100" });
     if (before) query.set("before", before);
-    const payload = await botJson<{ audit_log_entries?: AuditEntry[] }>(
-      env,
-      `/guilds/${guildId}/audit-logs?${query.toString()}`
-    ).catch(() => null);
-    if (!payload) break;
+    let payload: { audit_log_entries?: AuditEntry[] } | null = null;
+    try {
+      payload = await botJson<{ audit_log_entries?: AuditEntry[] }>(
+        env,
+        `/guilds/${guildId}/audit-logs?${query.toString()}`
+      );
+    } catch {
+      fetchFailed = true;
+      break;
+    }
 
     const entries = payload.audit_log_entries ?? [];
     pages += 1;
@@ -212,6 +219,7 @@ export async function fetchAuditBacklog(
         newestId,
         cursorFound: false,
         truncated: false,
+        fetchFailed: false,
         pages
       };
     }
@@ -236,7 +244,14 @@ export async function fetchAuditBacklog(
     entries: fresh,
     newestId,
     cursorFound,
-    truncated: Boolean(cursor && !cursorFound && !exhausted && pages >= Math.max(1, maxPages)),
+    truncated: Boolean(
+      cursor &&
+      !cursorFound &&
+      !exhausted &&
+      !fetchFailed &&
+      pages >= Math.max(1, maxPages)
+    ),
+    fetchFailed,
     pages
   };
 }
@@ -446,11 +461,16 @@ export class SecurityEngine {
       .map(role => role.id);
   }
 
-  async handleAudit(entry: AuditEntry): Promise<void> {
+  async handleAudit(
+    entry: AuditEntry,
+    options: { advanceCursor?: boolean } = {}
+  ): Promise<void> {
     const guildId = entry.guild_id;
     if (!guildId || !entry.id) return;
     if (!(await claimAuditEntry(this.env, guildId, entry.id))) return;
-    await advanceAuditCursor(this.env, guildId, entry.id);
+    if (options.advanceCursor !== false) {
+      await advanceAuditCursor(this.env, guildId, entry.id);
+    }
 
     const actorId = entry.user_id ?? "";
     if (!actorId) return;
@@ -891,8 +911,22 @@ export class SecurityEngine {
 
     const fresh = [...backlog.entries].reverse();
     for (const entry of fresh) {
-      await this.handleAudit(entry);
+      await this.handleAudit(entry, { advanceCursor: false });
     }
+
+    if (backlog.fetchFailed) {
+      // Do not move the durable cursor past entries we never fetched.
+      // Already-processed entries are deduplicated by processed_audit_entries,
+      // so the next reconciliation can safely fetch the same newest pages and
+      // continue deeper once Discord's Audit Log API recovers.
+      console.warn(
+        "audit reconciliation incomplete; cursor retained",
+        guildId,
+        { pages: backlog.pages, collectedEntries: backlog.entries.length }
+      );
+      return;
+    }
+
     await advanceAuditCursor(this.env, guildId, backlog.newestId);
   }
 
