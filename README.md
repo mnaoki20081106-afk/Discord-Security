@@ -13,7 +13,7 @@ The important design decision is intentional:
 
 ### Real-time Gateway protections
 
-The bot consumes Discord Gateway events directly instead of waiting for a one-minute audit-log poll.
+The bot consumes Discord Gateway events directly for the fast path. A scheduled Audit Log reconciliation pass also runs as a safety net so a brief Gateway disconnect does not create a silent protection gap.
 
 - `GUILD_AUDIT_LOG_ENTRY_CREATE`
 - `GUILD_MEMBER_ADD`
@@ -55,7 +55,7 @@ Depending on settings:
 
 ### Emergency lockdown
 
-Before applying a lockdown, the bot snapshots the current `@everyone` channel overwrites in its **own D1**.
+Before applying a lockdown, the bot snapshots the current channel/category permission overwrites in its **own D1**. It hardens role and member-specific overwrites too, preventing an explicit Allow from bypassing an `@everyone` deny. Synced category children are left synced where possible.
 
 During lockdown it denies:
 
@@ -172,9 +172,9 @@ The Worker uses:
 - Cloudflare Workers
 - D1
 - Durable Objects
-- a one-minute cron used only as a watchdog/recovery sweep
+- a one-minute watchdog/recovery sweep
 
-Detection itself is Gateway-driven in real time.
+Detection is Gateway-driven in real time, with Audit Log reconciliation as a second path for events that may have occurred during reconnects.
 
 ## Dashboard
 
