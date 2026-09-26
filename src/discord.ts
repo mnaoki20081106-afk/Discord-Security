@@ -8,6 +8,7 @@ import {
   deleteLockdownSnapshot,
   getLockdownSnapshot,
   getSecuritySettings,
+  listManagedServiceBots,
   putLockdownSnapshot
 } from "./db";
 
@@ -517,6 +518,24 @@ type LockdownBypass = {
   memberIds?: Iterable<string>;
 };
 
+export function lockdownOperatorMemberIds(input: {
+  trustedUserIds?: Iterable<string>;
+  allowedBotIds?: Iterable<string>;
+  managedBotIds?: Iterable<string>;
+  ownerId?: string | null;
+  securityBotId?: string | null;
+  mainBotId?: string | null;
+}): Set<string> {
+  const ids = new Set<string>();
+  for (const id of input.trustedUserIds ?? []) if (id) ids.add(id);
+  for (const id of input.allowedBotIds ?? []) if (id) ids.add(id);
+  for (const id of input.managedBotIds ?? []) if (id) ids.add(id);
+  if (input.ownerId) ids.add(input.ownerId);
+  if (input.securityBotId) ids.add(input.securityBotId);
+  if (input.mainBotId) ids.add(input.mainBotId);
+  return ids;
+}
+
 export function buildLockdownOverwrites(
   guildId: string,
   current: DiscordOverwrite[],
@@ -687,12 +706,13 @@ export async function enterLockdown(
   const existing = await getLockdownSnapshot(env, guildId);
   if (existing) return false;
 
-  const [channels, settings, roles, self, ownerId] = await Promise.all([
+  const [channels, settings, roles, self, ownerId, managedBots] = await Promise.all([
     botJson<DiscordChannel[]>(env, `/guilds/${guildId}/channels`),
     getSecuritySettings(env, guildId),
     botJson<DiscordRole[]>(env, `/guilds/${guildId}/roles`).catch(() => []),
     getMember(env, guildId, env.DISCORD_APPLICATION_ID),
-    getGuildOwnerId(env, guildId)
+    getGuildOwnerId(env, guildId),
+    listManagedServiceBots(env, guildId).catch(() => [])
   ]);
 
   const selfHighest = highestMemberRole(self, roles);
@@ -713,11 +733,17 @@ export async function enterLockdown(
     }
   }
 
-  const operatorMemberIds = new Set(settings.trustedUserIds);
-  if (ownerId) operatorMemberIds.add(ownerId);
-  if (env.DISCORD_APPLICATION_ID?.trim()) {
-    operatorMemberIds.add(env.DISCORD_APPLICATION_ID.trim());
-  }
+  // Keep infrastructure bots usable during Lockdown. Main Bot's own access
+  // guard otherwise restores its overwrite on the next sweep, causing the two
+  // services to fight over the same channel permissions.
+  const operatorMemberIds = lockdownOperatorMemberIds({
+    trustedUserIds: settings.trustedUserIds,
+    allowedBotIds: settings.allowedBotIds,
+    managedBotIds: managedBots.map(bot => bot.botId),
+    ownerId,
+    securityBotId: env.DISCORD_APPLICATION_ID?.trim() || null,
+    mainBotId: env.MAIN_BOT_APPLICATION_ID?.trim() || null
+  });
   const categories = new Map(
     channels
       .filter(channel => channel.type === 4)
