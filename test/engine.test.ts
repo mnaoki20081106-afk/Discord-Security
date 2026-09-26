@@ -87,6 +87,47 @@ describe("lockdown safety", () => {
     expect(BigInt(role.allow) & sendMessages).toBe(0n);
   });
 
+  it("keeps emergency operator roles and members usable during lockdown", () => {
+    const sendMessages = 1n << 11n;
+    const connect = 1n << 20n;
+    const result = buildLockdownOverwrites(
+      "100",
+      [
+        { id: "200", type: 0, allow: "0", deny: sendMessages.toString() },
+        { id: "300", type: 1, allow: "0", deny: connect.toString() },
+        { id: "400", type: 0, allow: sendMessages.toString(), deny: "0" }
+      ],
+      { roleIds: ["200"], memberIds: ["300"] }
+    );
+
+    const operatorRole = result.find(item => item.id === "200" && item.type === 0)!;
+    const operatorMember = result.find(item => item.id === "300" && item.type === 1)!;
+    const normalRole = result.find(item => item.id === "400" && item.type === 0)!;
+
+    expect(BigInt(operatorRole.allow) & sendMessages).toBe(sendMessages);
+    expect(BigInt(operatorRole.deny) & sendMessages).toBe(0n);
+    expect(BigInt(operatorMember.allow) & connect).toBe(connect);
+    expect(BigInt(operatorMember.deny) & connect).toBe(0n);
+    expect(BigInt(normalRole.deny) & sendMessages).toBe(sendMessages);
+  });
+
+  it("adds missing emergency operator overwrites so everyone deny cannot silence them", () => {
+    const sendMessages = 1n << 11n;
+    const result = buildLockdownOverwrites(
+      "100",
+      [],
+      { roleIds: ["200"], memberIds: ["300"] }
+    );
+
+    const everyone = result.find(item => item.id === "100" && item.type === 0)!;
+    const operatorRole = result.find(item => item.id === "200" && item.type === 0)!;
+    const operatorMember = result.find(item => item.id === "300" && item.type === 1)!;
+
+    expect(BigInt(everyone.deny) & sendMessages).toBe(sendMessages);
+    expect(BigInt(operatorRole.allow) & sendMessages).toBe(sendMessages);
+    expect(BigInt(operatorMember.allow) & sendMessages).toBe(sendMessages);
+  });
+
   it("does not duplicate an existing everyone overwrite", () => {
     const result = buildLockdownOverwrites("100", [
       { id: "100", type: 0, allow: "0", deny: "0" }
