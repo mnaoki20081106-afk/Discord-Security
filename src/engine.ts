@@ -92,15 +92,22 @@ export function auditContainmentDecision(input: {
   selfPrivilegeGrant: boolean;
 }): { contain: boolean; lockdown: boolean } {
   const threshold=Math.max(1,input.thresholdValue);
+  const destructiveMinimum=
+    input.action==="channel_delete"||input.action==="role_delete"
+      ?3
+      :threshold;
   const destructiveBurst=
     isDestructiveAuditAction(input.action) &&
-    input.count>=threshold;
+    input.count>=Math.max(threshold,destructiveMinimum);
   const mixedDestructiveBurst=
     input.destructiveKinds>=2 &&
-    input.crossActionScore>=input.crossActionThreshold;
+    input.crossActionScore>=Math.max(
+      input.crossActionThreshold+6,
+      Math.ceil(input.crossActionThreshold*1.5)
+    );
   const nonDestructiveBurst=
     !isDestructiveAuditAction(input.action) &&
-    input.count>=Math.max(4,threshold*2);
+    input.count>=Math.max(6,threshold*3);
   const pruneBurst=
     input.action==="member_prune" &&
     input.pruneMembers>=threshold;
@@ -286,6 +293,11 @@ function attachmentRisk(
   if (HIGH_RISK_EXECUTABLE_EXTENSIONS.has(ext)) return "high";
   if (REVIEW_ONLY_ATTACHMENT_EXTENSIONS.has(ext)) return "review";
   return null;
+}
+
+function deceptiveExecutableFilename(filename:string):boolean{
+  return /\.(?:pdf|docx?|xlsx?|pptx?|txt|png|jpe?g|gif|webp|zip|rar)\.(?:exe|scr|com|bat|cmd|ps1|vbs|vbe|wsf|wsh|msi|msp|lnk|reg|hta)$/i
+    .test(filename);
 }
 
 function normalizedMessageFingerprint(content: string): string {
@@ -1120,17 +1132,32 @@ export class SecurityEngine {
           userKey,
           60
         );
-        violation="dangerous_attachment";
-        metadata={
-          filenames:high.map(item=>item.filename).slice(0,10),
-          attachmentCount
-        };
-        // The executable itself is removed, but a user is only timed out after
-        // repeated delivery attempts. This avoids punishing a one-off mistake.
-        deleteUnsafe=true;
-        timeoutMinutes=attachmentCount>=2
-          ?settings.response.timeoutMinutes
-          :null;
+        const deceptive=high.some(item=>
+          deceptiveExecutableFilename(item.filename)
+        );
+        if(attachmentCount>=2||deceptive){
+          violation="dangerous_attachment";
+          metadata={
+            filenames:high.map(item=>item.filename).slice(0,10),
+            attachmentCount,
+            deceptiveFilename:deceptive
+          };
+          deleteUnsafe=true;
+          // Repeated executable delivery is a stronger malicious signal than
+          // a single deceptive filename, so only repetition causes a timeout.
+          timeoutMinutes=attachmentCount>=2
+            ?settings.response.timeoutMinutes
+            :null;
+        }else{
+          await recordIncident(this.env,{
+            guildId,
+            actorId:event.author.id,
+            kind:"suspicious_attachment",
+            severity:"low",
+            summary:"実行可能な添付を記録しました（初回は自動処置なし）",
+            data:{filenames:high.map(item=>item.filename).slice(0,10)}
+          });
+        }
       }else if(review.length){
         await recordIncident(this.env,{
           guildId,
