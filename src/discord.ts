@@ -65,15 +65,10 @@ type DiscordGuildSafety = {
   safety_alerts_channel_id?: string | null;
 };
 
-export async function getGuildSafetyStatus(
-  env: Env,
-  guildId: string,
+function safetyStatusFromGuild(
+  guild: DiscordGuildSafety,
   settings: SecuritySettings
-): Promise<GuildSafetyStatus> {
-  const guild = await botJson<DiscordGuildSafety>(
-    env,
-    `/guilds/${guildId}`
-  );
+): GuildSafetyStatus {
   const explicitContentFilter = Number(guild.explicit_content_filter ?? 0);
   const verificationLevel = Number(guild.verification_level ?? 0);
   const minimumVerificationLevel = Math.max(
@@ -92,12 +87,24 @@ export async function getGuildSafetyStatus(
   };
 }
 
+export async function getGuildSafetyStatus(
+  env: Env,
+  guildId: string,
+  settings: SecuritySettings
+): Promise<GuildSafetyStatus> {
+  const guild = await botJson<DiscordGuildSafety>(
+    env,
+    `/guilds/${guildId}`
+  );
+  return safetyStatusFromGuild(guild, settings);
+}
+
 export async function enforceGuildSafetyBaseline(
   env: Env,
   guildId: string,
   settings: SecuritySettings
 ): Promise<GuildSafetyStatus> {
-  const guild = await botJson<DiscordGuildSafety>(env, `/guilds/${guildId}`);
+  let guild = await botJson<DiscordGuildSafety>(env, `/guilds/${guildId}`);
   const patch: Record<string, number> = {};
   const currentFilter = Number(guild.explicit_content_filter ?? 0);
   const currentVerification = Number(guild.verification_level ?? 0);
@@ -116,7 +123,7 @@ export async function enforceGuildSafetyBaseline(
   }
 
   if (Object.keys(patch).length) {
-    await botJson(env, `/guilds/${guildId}`, {
+    guild = await botJson<DiscordGuildSafety>(env, `/guilds/${guildId}`, {
       method: "PATCH",
       headers: {
         "X-Audit-Log-Reason": "Discord Security: enforce server safety baseline"
@@ -125,7 +132,7 @@ export async function enforceGuildSafetyBaseline(
     });
   }
 
-  return getGuildSafetyStatus(env, guildId, settings);
+  return safetyStatusFromGuild(guild, settings);
 }
 
 export async function sendSecurityLog(
