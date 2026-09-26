@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS, maintenanceScopeAllows } from "../src/db";
 import { classifyAuditAction, fetchAuditBacklog, scoreUrl } from "../src/engine";
+import { OrderedTaskLanes } from "../src/gateway";
 import {
   buildLockdownOverwrites,
   dangerousPermissionAdded,
@@ -334,5 +335,86 @@ describe("audit backlog pagination", () => {
     expect(backlog.truncated).toBe(true);
     expect(backlog.pages).toBe(3);
     expect(backlog.entries).toHaveLength(300);
+  });
+});
+
+
+describe("Gateway Security event lanes", () => {
+  it("preserves order inside the same lane", async () => {
+    const errors: unknown[] = [];
+    const lanes = new OrderedTaskLanes((_label, error) => errors.push(error));
+    const order: string[] = [];
+    let release!: () => void;
+    const blocker = new Promise<void>(resolve => {
+      release = resolve;
+    });
+
+    lanes.enqueue("audit:1", "first", async () => {
+      order.push("first-start");
+      await blocker;
+      order.push("first-end");
+    });
+    lanes.enqueue("audit:1", "second", async () => {
+      order.push("second");
+    });
+
+    await Promise.resolve();
+    expect(order).toEqual(["first-start"]);
+
+    release();
+    await lanes.waitForLane("audit:1");
+    expect(order).toEqual(["first-start", "first-end", "second"]);
+    expect(errors).toEqual([]);
+  });
+
+  it("allows audit work to bypass a blocked message lane", async () => {
+    const errors: unknown[] = [];
+    const lanes = new OrderedTaskLanes((_label, error) => errors.push(error));
+    let releaseMessage!: () => void;
+    const messageBlocker = new Promise<void>(resolve => {
+      releaseMessage = resolve;
+    });
+    let messageFinished = false;
+    let auditFinished = false;
+
+    lanes.enqueue("message:1", "message", async () => {
+      await messageBlocker;
+      messageFinished = true;
+    });
+    lanes.enqueue("audit:1", "audit", async () => {
+      auditFinished = true;
+    });
+
+    await lanes.waitForLane("audit:1");
+    expect(auditFinished).toBe(true);
+    expect(messageFinished).toBe(false);
+
+    releaseMessage();
+    await lanes.waitForLane("message:1");
+    expect(messageFinished).toBe(true);
+    expect(errors).toEqual([]);
+  });
+
+  it("isolates work across guilds", async () => {
+    const lanes = new OrderedTaskLanes(() => undefined);
+    let releaseGuildA!: () => void;
+    const guildABlocker = new Promise<void>(resolve => {
+      releaseGuildA = resolve;
+    });
+    let guildBDone = false;
+
+    lanes.enqueue("audit:guild-a", "guild-a", async () => {
+      await guildABlocker;
+    });
+    lanes.enqueue("audit:guild-b", "guild-b", async () => {
+      guildBDone = true;
+    });
+
+    await lanes.waitForLane("audit:guild-b");
+    expect(guildBDone).toBe(true);
+
+    releaseGuildA();
+    await lanes.waitForLane("audit:guild-a");
+    expect(lanes.pendingLaneCount()).toBe(0);
   });
 });
