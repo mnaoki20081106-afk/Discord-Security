@@ -324,9 +324,12 @@ export type LockdownSnapshot = {
   createdAt: number;
   channels: Array<{
     channelId: string;
-    hadOverwrite: boolean;
-    allow: string;
-    deny: string;
+    permissionOverwrites: Array<{
+      id: string;
+      type: number;
+      allow: string;
+      deny: string;
+    }>;
   }>;
 };
 
