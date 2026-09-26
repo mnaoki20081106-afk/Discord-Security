@@ -12,6 +12,7 @@ type StoredGatewayState = GatewayStatus & {
   resumeUrl: string | null;
   heartbeatInterval: number | null;
   lastHeartbeatSent: number | null;
+  guildIds: string[];
 };
 
 type GatewayPayload = {
@@ -51,7 +52,8 @@ function emptyState(): StoredGatewayState {
     lastHeartbeatAck: null,
     lastEventAt: null,
     reconnectAttempts: 0,
-    botUserId: null
+    botUserId: null,
+    guildIds: []
   };
 }
 
@@ -81,6 +83,20 @@ export async function ensureDiscordSecurityGateway(env: Env): Promise<void> {
   if (!response.ok) {
     throw new Error(
       "Discord Security Gateway start failed: " +
+      response.status + " " + await response.text()
+    );
+  }
+}
+
+export async function reconcileDiscordSecurityAudits(env: Env): Promise<void> {
+  const id = env.SECURITY_GATEWAY.idFromName("discord-security");
+  const response = await env.SECURITY_GATEWAY.get(id).fetch(
+    "https://security-gateway.internal/reconcile",
+    { method: "POST" }
+  );
+  if (!response.ok) {
+    throw new Error(
+      "Discord Security audit reconciliation failed: " +
       response.status + " " + await response.text()
     );
   }
@@ -131,6 +147,15 @@ export class DiscordSecurityGateway {
     if (path === "/stop") {
       await this.stop();
       return Response.json({ ok: true });
+    }
+    if (path === "/reconcile") {
+      const stored = await this.loadState();
+      for (const guildId of stored.guildIds) {
+        await this.engine.reconcileGuild(guildId).catch(error => {
+          console.error("security audit reconcile failed", guildId, error);
+        });
+      }
+      return Response.json({ ok: true, guilds: stored.guildIds.length });
     }
     if (path.startsWith("/invalidate/")) {
       this.engine.invalidateSettings(path.slice("/invalidate/".length));
@@ -398,19 +423,45 @@ export class DiscordSecurityGateway {
         session_id?: string;
         resume_gateway_url?: string;
         user?: { id?: string };
+        guilds?: Array<{ id?: string }>;
       };
       stored.connected = true;
       stored.sessionId = ready.session_id ?? null;
       stored.resumeUrl = ready.resume_gateway_url ?? stored.resumeUrl;
       stored.reconnectAttempts = 0;
       stored.botUserId = ready.user?.id ?? null;
+      stored.guildIds = (ready.guilds ?? [])
+        .map(guild => String(guild.id ?? ""))
+        .filter(Boolean);
       await this.saveState(stored);
+      for (const guildId of stored.guildIds) {
+        await this.engine.reconcileGuild(guildId).catch(error => {
+          console.error("initial audit reconcile failed", guildId, error);
+        });
+      }
       return;
     }
     if (payload.t === "RESUMED") {
       stored.connected = true;
       stored.reconnectAttempts = 0;
       await this.saveState(stored);
+      return;
+    }
+    if (payload.t === "GUILD_CREATE") {
+      const guildId = String((payload.d as { id?: string })?.id ?? "");
+      if (guildId && !stored.guildIds.includes(guildId)) {
+        stored.guildIds.push(guildId);
+        await this.saveState(stored);
+        await this.engine.reconcileGuild(guildId).catch(() => undefined);
+      }
+      return;
+    }
+    if (payload.t === "GUILD_DELETE") {
+      const guildId = String((payload.d as { id?: string })?.id ?? "");
+      if (guildId) {
+        stored.guildIds = stored.guildIds.filter(id => id !== guildId);
+        await this.saveState(stored);
+      }
       return;
     }
     if (payload.t === "GUILD_AUDIT_LOG_ENTRY_CREATE") {
