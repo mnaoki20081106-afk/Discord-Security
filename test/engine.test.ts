@@ -6,7 +6,8 @@ import { applyBridgeSecurityFloor, isConfiguredMainBot, isManualDashboardLockdow
 import {
   buildLockdownOverwrites,
   dangerousPermissionAdded,
-  patchChannelOverwrites
+  patchChannelOverwrites,
+  roleIsStrictlyAbove
 } from "../src/discord";
 
 describe("URL risk scoring", () => {
@@ -568,5 +569,14 @@ describe("Main dashboard lockdown boundary", () => {
     expect(isManualDashboardLockdown("channel_delete by attacker")).toBe(false);
     expect(isManualDashboardLockdown("audit backlog overflow")).toBe(false);
     expect(isManualDashboardLockdown(null)).toBe(false);
+  });
+});
+
+
+describe("Security role hierarchy safety", () => {
+  it("requires Security to be strictly above dangerous roles", () => {
+    expect(roleIsStrictlyAbove({ position: 10 }, { position: 9 })).toBe(true);
+    expect(roleIsStrictlyAbove({ position: 10 }, { position: 10 })).toBe(false);
+    expect(roleIsStrictlyAbove({ position: 9 }, { position: 10 })).toBe(false);
   });
 });
