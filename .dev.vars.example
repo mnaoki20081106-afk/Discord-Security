@@ -1,0 +1,4 @@
+# Local development only. Do not commit real values.
+DISCORD_BOT_TOKEN=replace_me
+DISCORD_APPLICATION_ID=replace_me
+SECURITY_BRIDGE_SECRET=replace_with_at_least_32_random_characters
