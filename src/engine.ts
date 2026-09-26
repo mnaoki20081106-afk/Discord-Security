@@ -57,6 +57,16 @@ type ActionSpec = {
   critical?: boolean;
 };
 
+export function shouldSanctionActor(action: ActionKey): boolean {
+  return new Set<ActionKey>([
+    "channel_delete",
+    "role_delete",
+    "kick",
+    "ban_add",
+    "member_prune"
+  ]).has(action);
+}
+
 type WeightedAction = { at: number; weight: number; key: ActionKey };
 type SevereContentEvent = { at: number; userId: string };
 
@@ -630,13 +640,7 @@ export class SecurityEngine {
       count >= thresholdValue ||
       score >= settings.thresholds.crossActionScore
     ) {
-      const sanctionActor = new Set([
-        "channel_delete",
-        "role_delete",
-        "member_kick",
-        "member_ban",
-        "member_prune"
-      ]).has(spec.key);
+      const sanctionActor = shouldSanctionActor(spec.key);
       await this.trigger(guildId, actorId, settings, spec, {
         auditEntryId: entry.id,
         actionType: entry.action_type,
