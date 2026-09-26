@@ -18,6 +18,7 @@ import {
   buildLockdownOverwrites,
   buildManagedBotRecoveryOverwrites,
   dangerousPermissionAdded,
+  humanMemberOutranksSecurity,
   isHierarchyRelevantDangerousRole,
   lockdownOperatorMemberIds,
   patchChannelOverwrites,
@@ -662,6 +663,38 @@ describe("Security role hierarchy safety", () => {
     expect(roleIsStrictlyAbove({ position: 10 }, { position: 9 })).toBe(true);
     expect(roleIsStrictlyAbove({ position: 10 }, { position: 10 })).toBe(false);
     expect(roleIsStrictlyAbove({ position: 9 }, { position: 10 })).toBe(false);
+  });
+});
+
+describe("human-admin hierarchy boundary", () => {
+  const roles = [
+    { id:"100", name:"Human Admin", permissions:(1n<<3n).toString(), managed:false, position:30 },
+    { id:"200", name:"Security", permissions:"0", managed:true, position:20 },
+    { id:"300", name:"Member", permissions:"0", managed:false, position:10 }
+  ];
+
+  it("protects a human whose highest role is above Security", () => {
+    expect(humanMemberOutranksSecurity(
+      { user:{id:"human",bot:false}, roles:["100"] },
+      { user:{id:"security",bot:true}, roles:["200"] },
+      roles
+    )).toBe(true);
+  });
+
+  it("does not let bots inherit the human-operator protection boundary", () => {
+    expect(humanMemberOutranksSecurity(
+      { user:{id:"third-party-bot",bot:true}, roles:["100"] },
+      { user:{id:"security",bot:true}, roles:["200"] },
+      roles
+    )).toBe(false);
+  });
+
+  it("keeps lower human members inside Security's moderation boundary", () => {
+    expect(humanMemberOutranksSecurity(
+      { user:{id:"human",bot:false}, roles:["300"] },
+      { user:{id:"security",bot:true}, roles:["200"] },
+      roles
+    )).toBe(false);
   });
 });
 
