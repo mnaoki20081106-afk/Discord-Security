@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS, maintenanceScopeAllows } from "../src/db";
 import {
+  auditContainmentDecision,
   auditEntryCreatedAt,
   classifyAuditAction,
   fetchAuditBacklog,
   isSecurityBotSelfTarget,
+  isStrongSpam,
+  raidConfidence,
   scoreUrl,
   shouldSanctionActor
 } from "../src/engine";
@@ -661,5 +664,166 @@ describe("actor sanction safety boundary", () => {
     expect(shouldSanctionActor("guild_update")).toBe(false);
     expect(shouldSanctionActor("webhook")).toBe(false);
     expect(shouldSanctionActor("bot_add")).toBe(false);
+  });
+});
+
+describe("high-confidence containment policy", () => {
+  it("does not contain a one-off reversible admin change", () => {
+    expect(auditContainmentDecision({
+      action:"permission_escalation",
+      count:1,
+      thresholdValue:1,
+      crossActionScore:12,
+      crossActionThreshold:12,
+      destructiveKinds:0,
+      securitySelfOverwrite:false,
+      pruneMembers:0,
+      highRiskBotAdd:false,
+      selfPrivilegeGrant:false
+    })).toEqual({contain:false,lockdown:false});
+  });
+
+  it("contains repeated overwrite storms without sanctioning on the first few edits", () => {
+    expect(auditContainmentDecision({
+      action:"channel_overwrite",
+      count:4,
+      thresholdValue:4,
+      crossActionScore:20,
+      crossActionThreshold:12,
+      destructiveKinds:0,
+      securitySelfOverwrite:false,
+      pruneMembers:0,
+      highRiskBotAdd:false,
+      selfPrivilegeGrant:false
+    })).toEqual({contain:false,lockdown:false});
+
+    expect(auditContainmentDecision({
+      action:"channel_overwrite",
+      count:8,
+      thresholdValue:4,
+      crossActionScore:40,
+      crossActionThreshold:12,
+      destructiveKinds:0,
+      securitySelfOverwrite:false,
+      pruneMembers:0,
+      highRiskBotAdd:false,
+      selfPrivilegeGrant:false
+    })).toEqual({contain:true,lockdown:true});
+  });
+
+  it("uses targeted rollback for a first high-risk bot add or self privilege grant", () => {
+    expect(auditContainmentDecision({
+      action:"bot_add",
+      count:1,
+      thresholdValue:1,
+      crossActionScore:12,
+      crossActionThreshold:12,
+      destructiveKinds:0,
+      securitySelfOverwrite:false,
+      pruneMembers:0,
+      highRiskBotAdd:true,
+      selfPrivilegeGrant:false
+    })).toEqual({contain:true,lockdown:false});
+
+    expect(auditContainmentDecision({
+      action:"permission_escalation",
+      count:1,
+      thresholdValue:1,
+      crossActionScore:12,
+      crossActionThreshold:12,
+      destructiveKinds:0,
+      securitySelfOverwrite:false,
+      pruneMembers:0,
+      highRiskBotAdd:false,
+      selfPrivilegeGrant:true
+    })).toEqual({contain:true,lockdown:false});
+  });
+
+  it("locks down confirmed destructive bursts", () => {
+    expect(auditContainmentDecision({
+      action:"channel_delete",
+      count:2,
+      thresholdValue:2,
+      crossActionScore:14,
+      crossActionThreshold:12,
+      destructiveKinds:1,
+      securitySelfOverwrite:false,
+      pruneMembers:0,
+      highRiskBotAdd:false,
+      selfPrivilegeGrant:false
+    })).toEqual({contain:true,lockdown:true});
+
+    expect(auditContainmentDecision({
+      action:"kick",
+      count:1,
+      thresholdValue:5,
+      crossActionScore:12,
+      crossActionThreshold:12,
+      destructiveKinds:2,
+      securitySelfOverwrite:false,
+      pruneMembers:0,
+      highRiskBotAdd:false,
+      selfPrivilegeGrant:false
+    })).toEqual({contain:true,lockdown:true});
+  });
+});
+
+describe("false-positive-resistant message policy", () => {
+  it("does not punish normal fast conversation at the old threshold", () => {
+    expect(isStrongSpam({
+      messageCount:6,
+      repeatedCount:1,
+      mentions:0,
+      spamMessages:6,
+      mentionLimit:8
+    })).toBe(false);
+  });
+
+  it("still catches repeated spam, extreme bursts, and mass mentions", () => {
+    expect(isStrongSpam({
+      messageCount:6,
+      repeatedCount:3,
+      mentions:0,
+      spamMessages:6,
+      mentionLimit:8
+    })).toBe(true);
+    expect(isStrongSpam({
+      messageCount:12,
+      repeatedCount:1,
+      mentions:0,
+      spamMessages:6,
+      mentionLimit:8
+    })).toBe(true);
+    expect(isStrongSpam({
+      messageCount:1,
+      repeatedCount:1,
+      mentions:10,
+      spamMessages:6,
+      mentionLimit:8
+    })).toBe(true);
+  });
+
+  it("does not punish a single message with the former mention threshold", () => {
+    expect(isStrongSpam({
+      messageCount:1,
+      repeatedCount:1,
+      mentions:8,
+      spamMessages:6,
+      mentionLimit:8
+    })).toBe(false);
+  });
+});
+
+describe("raid confidence policy", () => {
+  it("treats a join burst alone as suspicious but not confirmed", () => {
+    expect(raidConfidence({joins:8,youngJoins:0,raidJoins:8}))
+      .toEqual({suspicious:true,confirmed:false});
+  });
+
+  it("confirms raids when the burst is dominated by new accounts or is extreme", () => {
+    expect(raidConfidence({joins:8,youngJoins:5,raidJoins:8}))
+      .toEqual({suspicious:true,confirmed:true});
+    expect(raidConfidence({joins:16,youngJoins:0,raidJoins:8}))
+      .toEqual({suspicious:true,confirmed:true});
   });
 });
