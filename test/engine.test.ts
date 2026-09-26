@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS, maintenanceScopeAllows } from "../src/db";
 import { classifyAuditAction, scoreUrl } from "../src/engine";
 import {
   buildLockdownOverwrites,
-  dangerousPermissionAdded
+  dangerousPermissionAdded,
+  patchChannelOverwrites
 } from "../src/discord";
 
 describe("URL risk scoring", () => {
@@ -243,5 +244,30 @@ describe("coordinated content defaults", () => {
   it("uses a short burst window for coordinated phishing or malware attacks", () => {
     expect(DEFAULT_SETTINGS.thresholds.severeContentWindowSeconds).toBeGreaterThanOrEqual(5);
     expect(DEFAULT_SETTINGS.thresholds.severeContentWindowSeconds).toBeLessThanOrEqual(300);
+  });
+});
+
+
+describe("lockdown Discord API error handling", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("rejects a non-2xx permission overwrite response instead of reporting success", async () => {
+    vi.stubGlobal("fetch", async () =>
+      new Response('{"message":"Missing Permissions"}', {
+        status: 403,
+        headers: { "Content-Type": "application/json" }
+      })
+    );
+
+    await expect(
+      patchChannelOverwrites(
+        { DISCORD_BOT_TOKEN: "test-token" } as never,
+        "123",
+        [{ id: "456", type: 0, allow: "0", deny: "2048" }],
+        "test lockdown"
+      )
+    ).rejects.toMatchObject({ status: 403 });
   });
 });

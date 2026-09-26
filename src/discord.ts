@@ -499,6 +499,19 @@ function canonicalOverwrites(items: DiscordOverwrite[]): string {
   );
 }
 
+export async function patchChannelOverwrites(
+  env: Env,
+  channelId: string,
+  permissionOverwrites: DiscordOverwrite[],
+  reason: string
+): Promise<void> {
+  await botJson<DiscordChannel>(env, `/channels/${channelId}`, {
+    method: "PATCH",
+    headers: { "X-Audit-Log-Reason": reason },
+    body: JSON.stringify({ permission_overwrites: permissionOverwrites })
+  });
+}
+
 export async function enterLockdown(
   env: Env,
   guildId: string,
@@ -546,16 +559,59 @@ export async function enterLockdown(
     channels: snapshot
   });
 
-  for (const item of snapshot) {
-    const permission_overwrites = buildLockdownOverwrites(
-      guildId,
-      item.permissionOverwrites
+  const applied: typeof snapshot = [];
+  try {
+    for (const item of snapshot) {
+      const permissionOverwrites = buildLockdownOverwrites(
+        guildId,
+        item.permissionOverwrites
+      );
+      try {
+        await patchChannelOverwrites(
+          env,
+          item.channelId,
+          permissionOverwrites,
+          `Discord Security Lockdown: ${reason}`
+        );
+        applied.push(item);
+      } catch (error) {
+        // If the channel disappeared between the guild snapshot and the PATCH,
+        // there is nothing left to contain. Other failures are unsafe to hide.
+        if (error instanceof DiscordApiError && error.status === 404) continue;
+        throw error;
+      }
+    }
+  } catch (error) {
+    const rollbackFailures: string[] = [];
+    for (const item of [...applied].reverse()) {
+      try {
+        await patchChannelOverwrites(
+          env,
+          item.channelId,
+          item.permissionOverwrites,
+          "Discord Security: rollback incomplete lockdown"
+        );
+      } catch (rollbackError) {
+        if (
+          rollbackError instanceof DiscordApiError &&
+          rollbackError.status === 404
+        ) continue;
+        rollbackFailures.push(item.channelId);
+      }
+    }
+
+    // Only discard the recovery snapshot when every applied change was
+    // successfully rolled back. Otherwise keep it so manual/scheduled unlock
+    // can retry and we never lose the original permission state.
+    if (rollbackFailures.length === 0) {
+      await deleteLockdownSnapshot(env, guildId);
+    }
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      rollbackFailures.length
+        ? `Lockdown failed and rollback is incomplete for ${rollbackFailures.length} channel(s): ${detail}`
+        : `Lockdown failed and was rolled back safely: ${detail}`
     );
-    await botFetch(env, `/channels/${item.channelId}`, {
-      method: "PATCH",
-      headers: { "X-Audit-Log-Reason": `Discord Security Lockdown: ${reason}` },
-      body: JSON.stringify({ permission_overwrites })
-    }).catch(() => undefined);
   }
   return true;
 }
@@ -567,15 +623,30 @@ export async function exitLockdown(
   const snapshot = await getLockdownSnapshot(env, guildId);
   if (!snapshot) return false;
 
+  const failures: string[] = [];
   for (const item of snapshot.channels) {
-    await botFetch(env, `/channels/${item.channelId}`, {
-      method: "PATCH",
-      headers: { "X-Audit-Log-Reason": "Discord Security Lockdown ended" },
-      body: JSON.stringify({
-        permission_overwrites: item.permissionOverwrites
-      })
-    }).catch(() => undefined);
+    try {
+      await patchChannelOverwrites(
+        env,
+        item.channelId,
+        item.permissionOverwrites,
+        "Discord Security Lockdown ended"
+      );
+    } catch (error) {
+      // Deleted channels no longer need their permissions restored.
+      if (error instanceof DiscordApiError && error.status === 404) continue;
+      failures.push(item.channelId);
+    }
   }
+
+  if (failures.length) {
+    // Keep the snapshot. The scheduled recovery sweep will retry next minute
+    // and a dashboard unlock can also retry without losing the original state.
+    throw new Error(
+      `Lockdown restore incomplete for ${failures.length} channel(s)`
+    );
+  }
+
   await deleteLockdownSnapshot(env, guildId);
   return true;
 }
