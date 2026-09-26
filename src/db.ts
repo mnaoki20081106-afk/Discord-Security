@@ -343,15 +343,28 @@ export async function hasMaintenanceLease(
   env: Env,
   guildId: string,
   actorId: string,
-  action: string
+  action: string,
+  actionAtMs = Date.now()
 ): Promise<boolean> {
   await ensureSchema(env);
+  const skewMs = 5_000;
   const rows = (await env.DB.prepare(`
-    SELECT scope FROM maintenance_leases
-    WHERE guild_id=? AND actor_id=? AND expires_at>?
+    SELECT scope,created_at,expires_at FROM maintenance_leases
+    WHERE guild_id=? AND actor_id=?
+      AND created_at<=?
+      AND expires_at>=?
     ORDER BY expires_at DESC
-    LIMIT 5
-  `).bind(guildId, actorId, Date.now()).all<{ scope: MaintenanceScope }>()).results;
+    LIMIT 10
+  `).bind(
+    guildId,
+    actorId,
+    actionAtMs + skewMs,
+    actionAtMs - skewMs
+  ).all<{
+    scope: MaintenanceScope;
+    created_at: number;
+    expires_at: number;
+  }>()).results;
   return rows.some(row => maintenanceScopeAllows(row.scope, action));
 }
 
@@ -372,7 +385,10 @@ export async function cleanExpired(env: Env): Promise<void> {
   await ensureSchema(env);
   const now = Date.now();
   await env.DB.batch([
-    env.DB.prepare("DELETE FROM maintenance_leases WHERE expires_at<?").bind(now),
+    // Audit-log events may arrive after a lease expires. Keep recently expired
+    // leases long enough to validate the action's audit-entry timestamp.
+    env.DB.prepare("DELETE FROM maintenance_leases WHERE expires_at<?")
+      .bind(now - 15 * 60_000),
     env.DB.prepare("DELETE FROM bridge_nonces WHERE expires_at<?").bind(now),
     env.DB.prepare("DELETE FROM processed_audit_entries WHERE processed_at<?")
       .bind(now - 24 * 60 * 60_000)
