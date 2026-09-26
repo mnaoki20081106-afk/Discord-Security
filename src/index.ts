@@ -1,5 +1,6 @@
 import {
   cleanExpired,
+  consumeBridgeNonce,
   createMaintenanceLease,
   ensureSchema,
   getLockdownSnapshot,
@@ -9,6 +10,7 @@ import {
   saveSecuritySettings
 } from "./db";
 import {
+  botJson,
   enterLockdown,
   exitLockdown
 } from "./discord";
@@ -74,8 +76,13 @@ async function verifyBridge(
     return false;
   }
   const timestamp = request.headers.get("X-Security-Timestamp") ?? "";
+  const nonce = request.headers.get("X-Security-Nonce") ?? "";
   const signature = request.headers.get("X-Security-Signature") ?? "";
-  if (!/^\d+$/.test(timestamp) || !/^[a-f0-9]{64}$/i.test(signature)) return false;
+  if (
+    !/^\d+$/.test(timestamp) ||
+    !/^[a-zA-Z0-9_-]{16,128}$/.test(nonce) ||
+    !/^[a-f0-9]{64}$/i.test(signature)
+  ) return false;
   const numeric = Number(timestamp);
   if (!Number.isFinite(numeric) || Math.abs(Date.now() - numeric) > 60_000) {
     return false;
@@ -83,11 +90,13 @@ async function verifyBridge(
   const url = new URL(request.url);
   const canonical =
     timestamp + "\n" +
+    nonce + "\n" +
     request.method.toUpperCase() + "\n" +
     url.pathname + url.search + "\n" +
     body;
   const expected = await hmacHex(env.SECURITY_BRIDGE_SECRET, canonical);
-  return safeEqual(expected, signature.toLowerCase());
+  if (!safeEqual(expected, signature.toLowerCase())) return false;
+  return consumeBridgeNonce(env, nonce, Date.now() + 2 * 60_000);
 }
 
 async function invalidateGatewaySettings(env: Env, guildId: string): Promise<void> {
@@ -172,14 +181,23 @@ async function handleInternal(
   const overview = url.pathname.match(/^\/internal\/guilds\/(\d+)\/overview$/);
   if (overview && request.method === "GET") {
     const guildId = overview[1]!;
-    const [settings, status, incidents, lockdown] = await Promise.all([
+    const [settings, status, incidents, lockdown, guild] = await Promise.all([
       getSecuritySettings(env, guildId),
       gatewayStatus(env),
       listIncidents(env, guildId, Number(url.searchParams.get("limit") ?? 30)),
-      getLockdownSnapshot(env, guildId)
+      getLockdownSnapshot(env, guildId),
+      botJson<{ id: string; name: string }>(env, `/guilds/${guildId}`).catch(() => null)
     ]);
+    const permissions = (
+      128n | 32n | 268435456n | 16n | 536870912n | 8192n |
+      1099511627776n | 2n | 4n | 1024n | 2048n | 16384n
+    ).toString();
     return json({
       configured: true,
+      installed: Boolean(guild),
+      inviteUrl:
+        `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(env.DISCORD_APPLICATION_ID)}` +
+        `&permissions=${permissions}&integration_type=0&scope=bot%20applications.commands`,
       settings,
       status,
       incidents,
