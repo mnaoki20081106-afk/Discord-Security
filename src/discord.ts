@@ -196,6 +196,20 @@ export function dangerousPermissionAdded(
   }
 }
 
+export function isHierarchyRelevantDangerousRole(
+  role: { id: string; permissions: string; managed?: boolean },
+  selfRoleIds: ReadonlySet<string>
+): boolean {
+  // Managed bot/integration roles cannot be stripped by Security and should not
+  // force Security above every service bot. Only human-editable dangerous roles
+  // participate in the containment hierarchy requirement.
+  return (
+    !role.managed &&
+    !selfRoleIds.has(role.id) &&
+    containsDangerousPermission(role.permissions)
+  );
+}
+
 type DiscordRole = {
   id: string;
   name?: string;
@@ -253,10 +267,22 @@ function memberBasePermissions(
 }
 
 export function roleIsStrictlyAbove(
-  upper: { position?: number },
-  lower: { position?: number }
+  upper: { position?: number; id?: string },
+  lower: { position?: number; id?: string }
 ): boolean {
-  return Number(upper.position ?? 0) > Number(lower.position ?? 0);
+  const upperPosition = Number(upper.position ?? 0);
+  const lowerPosition = Number(lower.position ?? 0);
+  if (upperPosition !== lowerPosition) return upperPosition > lowerPosition;
+
+  // Discord can report equal numeric positions. Match Discord's role
+  // hierarchy tie-breaker used by the Main Bot: the older/smaller snowflake
+  // is considered higher for equal positions.
+  if (!upper.id || !lower.id || upper.id === lower.id) return false;
+  try {
+    return BigInt(upper.id) < BigInt(lower.id);
+  } catch {
+    return false;
+  }
 }
 
 function highestMemberRole(
@@ -325,8 +351,7 @@ export async function getSecurityCapabilities(
 
   const selfRoleIds = new Set(self.roles ?? []);
   const dangerousRoles = roles.filter(role =>
-    !selfRoleIds.has(role.id) &&
-    containsDangerousPermission(role.permissions)
+    isHierarchyRelevantDangerousRole(role, selfRoleIds)
   );
   const dangerousRolesNotBelow = dangerousRoles
     .filter(role => !selfHighest || !roleIsStrictlyAbove(selfHighest, role))
@@ -340,15 +365,18 @@ export async function getSecurityCapabilities(
   const roleAboveDangerousRoles = selfHighest
     ? dangerousRolesNotBelow.length === 0
     : null;
-  const hierarchyReady =
-    roleAboveManagedBots !== false &&
-    roleAboveDangerousRoles !== false;
+  // Managed bot/integration roles are intentionally not a readiness gate.
+  // They cannot be stripped like ordinary roles, and requiring Security above
+  // every service bot creates an unnecessary top-role conflict with Main Bot.
+  // Security still must be above dangerous human-editable roles that it may
+  // need to strip during containment.
+  const hierarchyReady = roleAboveDangerousRoles !== false;
 
   return {
     administrator,
     requiredReady: missingPermissions.length === 0 && hierarchyReady,
     // Administrator bypasses channel permission overwrites, but Discord's
-    // member/role hierarchy still applies to moderation and role management.
+    // member/role hierarchy still applies to human-editable role management.
     maximumProtection: administrator && hierarchyReady,
     roleAboveManagedBots,
     roleAboveDangerousRoles,

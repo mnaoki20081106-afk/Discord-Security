@@ -18,6 +18,7 @@ import {
   buildLockdownOverwrites,
   buildManagedBotRecoveryOverwrites,
   dangerousPermissionAdded,
+  isHierarchyRelevantDangerousRole,
   patchChannelOverwrites,
   roleIsStrictlyAbove
 } from "../src/discord";
@@ -642,6 +643,33 @@ describe("Security role hierarchy safety", () => {
   });
 });
 
+describe("managed-bot hierarchy compatibility", () => {
+  it("does not treat managed bot roles as removable hierarchy threats", () => {
+    const selfRoles = new Set(["security-role"]);
+    expect(isHierarchyRelevantDangerousRole({
+      id:"main-bot-role",
+      permissions:(1n<<3n).toString(),
+      managed:true
+    }, selfRoles)).toBe(false);
+    expect(isHierarchyRelevantDangerousRole({
+      id:"human-admin-role",
+      permissions:(1n<<3n).toString(),
+      managed:false
+    }, selfRoles)).toBe(true);
+  });
+
+  it("uses the snowflake tie-breaker when Discord reports equal positions", () => {
+    expect(roleIsStrictlyAbove(
+      {position:10,id:"100"},
+      {position:10,id:"200"}
+    )).toBe(true);
+    expect(roleIsStrictlyAbove(
+      {position:10,id:"200"},
+      {position:10,id:"100"}
+    )).toBe(false);
+  });
+});
+
 describe("audit entry time", () => {
   it("derives the Discord action time from the audit-entry snowflake", () => {
     const actionAt = Date.UTC(2026, 8, 26, 10, 31, 0, 123);
@@ -825,7 +853,7 @@ describe("high-confidence containment policy", () => {
       pruneMembers:0,
       highRiskBotAdd:true,
       selfPrivilegeGrant:false
-    })).toEqual({contain:true,lockdown:false});
+    })).toEqual({contain:false,lockdown:false});
 
     expect(auditContainmentDecision({
       action:"permission_escalation",
@@ -908,6 +936,56 @@ describe("high-confidence containment policy", () => {
       highRiskBotAdd:false,
       selfPrivilegeGrant:false
     })).toEqual({contain:true,lockdown:true});
+  });
+});
+
+describe("bot coexistence containment policy", () => {
+  it("does not lockdown a bot for a burst of reversible configuration changes", () => {
+    expect(auditContainmentDecision({
+      action:"channel_overwrite",
+      count:50,
+      thresholdValue:4,
+      crossActionScore:100,
+      crossActionThreshold:12,
+      destructiveKinds:0,
+      securitySelfOverwrite:false,
+      pruneMembers:0,
+      highRiskBotAdd:false,
+      selfPrivilegeGrant:false,
+      actorIsBot:true
+    })).toEqual({contain:false,lockdown:false});
+  });
+
+  it("still locks down destructive bot activity", () => {
+    expect(auditContainmentDecision({
+      action:"channel_delete",
+      count:5,
+      thresholdValue:2,
+      crossActionScore:35,
+      crossActionThreshold:12,
+      destructiveKinds:1,
+      securitySelfOverwrite:false,
+      pruneMembers:0,
+      highRiskBotAdd:false,
+      selfPrivilegeGrant:false,
+      actorIsBot:true
+    })).toEqual({contain:true,lockdown:true});
+  });
+
+  it("keeps privileged bot additions review-only even when repeated", () => {
+    expect(auditContainmentDecision({
+      action:"bot_add",
+      count:20,
+      thresholdValue:1,
+      crossActionScore:100,
+      crossActionThreshold:12,
+      destructiveKinds:0,
+      securitySelfOverwrite:false,
+      pruneMembers:0,
+      highRiskBotAdd:true,
+      selfPrivilegeGrant:false,
+      actorIsBot:false
+    })).toEqual({contain:false,lockdown:false});
   });
 });
 
