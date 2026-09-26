@@ -335,7 +335,6 @@ export function maintenanceScopeAllows(
   scope: MaintenanceScope,
   action: string
 ): boolean {
-  if (scope === "all") return true;
   if (scope === "restore") return RESTORE_ACTIONS.has(action);
   return DASHBOARD_EDIT_ACTIONS.has(action);
 }

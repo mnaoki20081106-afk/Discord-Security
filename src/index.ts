@@ -289,7 +289,7 @@ async function handleInternal(
     const actorId = String(body.actorId ?? "");
     const scope = body.scope;
     if (!/^\d+$/.test(actorId)) return json({ error: "invalid_actor" }, 400);
-    if (!["dashboard_edit", "restore", "all"].includes(String(scope))) {
+    if (!["dashboard_edit", "restore"].includes(String(scope))) {
       return json({ error: "invalid_scope" }, 400);
     }
     return json(await createMaintenanceLease(

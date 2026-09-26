@@ -208,10 +208,6 @@ describe("maintenance lease scope", () => {
       expect(maintenanceScopeAllows("restore", action)).toBe(false);
     }
   });
-
-  it("keeps explicit all-scope available for emergency administration", () => {
-    expect(maintenanceScopeAllows("all", "bot_add")).toBe(true);
-  });
 });
 
 

@@ -88,7 +88,7 @@ export type SecurityIncident = {
   createdAt: number;
 };
 
-export type MaintenanceScope = "dashboard_edit" | "restore" | "all";
+export type MaintenanceScope = "dashboard_edit" | "restore";
 
 export interface Env {
   DB: D1Database;

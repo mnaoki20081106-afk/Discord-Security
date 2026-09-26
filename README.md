@@ -115,7 +115,7 @@ Requests are signed with `SECURITY_BRIDGE_SECRET` and expire after 60 seconds.
 
 The Main Bot is intentionally **not permanently whitelisted**. Its bot ID is registered separately as a managed service bot so re-adding Main does not trigger Bot Guard, while destructive actions performed by Main are still monitored.
 
-When Main legitimately performs a destructive operation, Main requests a short-lived signed maintenance lease. Backup restore renews a short `restore` lease while a restore job is actually running.
+When Main legitimately performs a destructive operation, Main requests a short-lived signed maintenance lease. Backup restore renews a short `restore` lease while a restore job is actually running. There is deliberately no bridge-exposed global bypass scope: the Main Worker can only request the constrained `dashboard_edit` or `restore` leases.
 
 This preserves the important property that a compromised Main Bot can still be contained by Security Bot outside an authorized maintenance window.
 
