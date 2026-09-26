@@ -17,7 +17,8 @@ import {
 import {
   DiscordSecurityGateway,
   ensureDiscordSecurityGateway,
-  gatewayStatus
+  gatewayStatus,
+  reconcileDiscordSecurityAudits
 } from "./gateway";
 import type {
   Env,
@@ -139,6 +140,7 @@ function settingsPatch(body: unknown): Partial<SecuritySettings> {
       raidWindowSeconds: [2, 300],
       spamMessages: [2, 50],
       spamWindowSeconds: [1, 120],
+      mentionLimit: [2, 100],
       linkBurst: [2, 50],
       linkWindowSeconds: [2, 300],
       minAccountAgeHours: [0, 87600]
@@ -286,7 +288,12 @@ export default {
       return json({
         ok: true,
         service: "discord-security",
-        gateway: status
+        gateway: {
+          connected: status.connected,
+          lastHeartbeatAck: status.lastHeartbeatAck,
+          lastEventAt: status.lastEventAt,
+          reconnectAttempts: status.reconnectAttempts
+        }
       });
     }
 
@@ -321,6 +328,9 @@ export default {
     ctx.waitUntil((async () => {
       await cleanExpired(env);
       await ensureDiscordSecurityGateway(env);
+      await reconcileDiscordSecurityAudits(env).catch(error => {
+        console.error("scheduled audit reconciliation failed", error);
+      });
       for (const guildId of await listExpiredLockdowns(env)) {
         await exitLockdown(env, guildId).catch(error => {
           console.error("lockdown restore failed", guildId, error);
