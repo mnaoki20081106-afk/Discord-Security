@@ -196,6 +196,20 @@ export function dangerousPermissionAdded(
   }
 }
 
+export function isHierarchyRelevantDangerousRole(
+  role: { id: string; permissions: string; managed?: boolean },
+  selfRoleIds: ReadonlySet<string>
+): boolean {
+  // Managed bot/integration roles cannot be stripped by Security and should not
+  // force Security above every service bot. Only human-editable dangerous roles
+  // participate in the containment hierarchy requirement.
+  return (
+    !role.managed &&
+    !selfRoleIds.has(role.id) &&
+    containsDangerousPermission(role.permissions)
+  );
+}
+
 type DiscordRole = {
   id: string;
   name?: string;
@@ -337,9 +351,7 @@ export async function getSecurityCapabilities(
 
   const selfRoleIds = new Set(self.roles ?? []);
   const dangerousRoles = roles.filter(role =>
-    !role.managed &&
-    !selfRoleIds.has(role.id) &&
-    containsDangerousPermission(role.permissions)
+    isHierarchyRelevantDangerousRole(role, selfRoleIds)
   );
   const dangerousRolesNotBelow = dangerousRoles
     .filter(role => !selfHighest || !roleIsStrictlyAbove(selfHighest, role))
