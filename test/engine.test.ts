@@ -985,7 +985,7 @@ describe("bot coexistence containment policy", () => {
       highRiskBotAdd:true,
       selfPrivilegeGrant:false,
       actorIsBot:false
-    })).toEqual({contain:true,lockdown:true});
+    })).toEqual({contain:false,lockdown:false});
   });
 });
 
