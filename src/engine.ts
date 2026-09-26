@@ -140,6 +140,7 @@ export function auditContainmentDecision(input: {
   // actor is a bot. Destructive actions are still evaluated below.
   const nonDestructiveBurst=
     !input.actorIsBot &&
+    input.action!=="bot_add" &&
     !isDestructiveAuditAction(input.action) &&
     input.count>=Math.max(6,threshold*3);
   const pruneBurst=
@@ -553,16 +554,22 @@ export class SecurityEngine {
     actorId: string,
     settings: SecuritySettings
   ): Promise<{ isBot: boolean; protectedBot: boolean }> {
-    const member = await getMember(this.env, guildId, actorId);
-    const isBot = Boolean(member?.user?.bot);
-    if (!isBot) return { isBot: false, protectedBot: false };
-
+    // Protect known infrastructure by identity before any Discord REST lookup.
+    // A transient member-fetch failure must never make Main Bot kick-eligible.
     const protectedBot =
       actorId === this.env.MAIN_BOT_APPLICATION_ID?.trim() ||
       settings.allowedBotIds.includes(actorId) ||
       await isManagedServiceBot(this.env, guildId, actorId);
+    if (protectedBot) return { isBot: true, protectedBot: true };
 
-    return { isBot: true, protectedBot };
+    const member = await getMember(this.env, guildId, actorId);
+    if (!member) {
+      // Unknown identity is not enough evidence for reversible-operation
+      // containment. Treat it as automation for that gate; destructive actions
+      // are still evaluated normally.
+      return { isBot: true, protectedBot: false };
+    }
+    return { isBot: Boolean(member.user?.bot), protectedBot: false };
   }
 
   private async trusted(
@@ -610,16 +617,17 @@ export class SecurityEngine {
     const ownerId = await getGuildOwnerId(this.env, guildId);
     if (ownerId === actorId) return;
 
+    const protectedBot =
+      actorId === this.env.MAIN_BOT_APPLICATION_ID?.trim() ||
+      settings.allowedBotIds.includes(actorId) ||
+      await isManagedServiceBot(this.env, guildId, actorId);
+    // Main/managed/explicitly-allowed service bots are infrastructure.
+    // Never kick them automatically. If one is compromised, destructive
+    // activity is contained with guild Lockdown instead.
+    if (protectedBot) return;
+
     const member = await getMember(this.env, guildId, actorId);
     if (member?.user?.bot) {
-      const protectedBot =
-        actorId === this.env.MAIN_BOT_APPLICATION_ID?.trim() ||
-        settings.allowedBotIds.includes(actorId) ||
-        await isManagedServiceBot(this.env, guildId, actorId);
-      // Main/managed/explicitly-allowed service bots are infrastructure.
-      // Never kick them automatically. If one is compromised, destructive
-      // activity is contained with guild Lockdown instead.
-      if (protectedBot) return;
       if (settings.response.kickMaliciousBots) {
         await kickMember(
           this.env,
