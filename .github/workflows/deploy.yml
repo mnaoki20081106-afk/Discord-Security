@@ -1,12 +1,6 @@
 name: Deploy Security Worker
 
 on:
-  push:
-    branches: ["main"]
-    paths:
-      - "src/**"
-      - "test/**"
-      - ".github/workflows/deploy.yml"
   workflow_dispatch:
     inputs:
       confirm:
@@ -19,7 +13,7 @@ permissions:
 
 jobs:
   deploy:
-    if: ${{ github.event_name == 'push' || inputs.confirm == 'DEPLOY' }}
+    if: ${{ inputs.confirm == 'DEPLOY' }}
     runs-on: ubuntu-latest
     environment: production
     env:
