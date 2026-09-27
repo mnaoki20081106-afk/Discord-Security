@@ -1044,6 +1044,65 @@ describe("bot coexistence containment policy", () => {
   });
 });
 
+describe("third-party security bot coexistence sanction policy", () => {
+  it("does not kick another bot for a legitimate mass-kick response", () => {
+    expect(shouldAutoSanctionActor({
+      action:"kick",
+      count:40,
+      thresholdValue:5,
+      crossActionScore:80,
+      crossActionThreshold:12,
+      destructiveKinds:1,
+      actorIsBot:true
+    })).toBe(false);
+  });
+
+  it("does not kick another bot for a legitimate mass-ban response", () => {
+    expect(shouldAutoSanctionActor({
+      action:"ban_add",
+      count:40,
+      thresholdValue:4,
+      crossActionScore:80,
+      crossActionThreshold:12,
+      destructiveKinds:1,
+      actorIsBot:true
+    })).toBe(false);
+  });
+
+  it("still removes a bot that performs extreme structural destruction", () => {
+    expect(shouldAutoSanctionActor({
+      action:"channel_delete",
+      count:10,
+      thresholdValue:2,
+      crossActionScore:70,
+      crossActionThreshold:12,
+      destructiveKinds:1,
+      actorIsBot:true
+    })).toBe(true);
+    expect(shouldAutoSanctionActor({
+      action:"role_delete",
+      count:8,
+      thresholdValue:2,
+      crossActionScore:70,
+      crossActionThreshold:12,
+      destructiveKinds:1,
+      actorIsBot:true
+    })).toBe(true);
+  });
+
+  it("keeps strict sanctions for human destructive bursts", () => {
+    expect(shouldAutoSanctionActor({
+      action:"kick",
+      count:15,
+      thresholdValue:5,
+      crossActionScore:70,
+      crossActionThreshold:12,
+      destructiveKinds:1,
+      actorIsBot:false
+    })).toBe(true);
+  });
+});
+
 describe("false-positive-resistant message policy", () => {
   it("does not punish normal fast conversation at the old threshold", () => {
     expect(isStrongSpam({

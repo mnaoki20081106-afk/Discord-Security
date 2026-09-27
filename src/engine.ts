@@ -75,6 +75,7 @@ export function shouldAutoSanctionActor(input:{
   crossActionScore:number;
   crossActionThreshold:number;
   destructiveKinds:number;
+  actorIsBot?:boolean;
 }):boolean{
   if(!shouldSanctionActor(input.action)) return false;
   const floor=
@@ -91,6 +92,19 @@ export function shouldAutoSanctionActor(input:{
       input.crossActionThreshold*2,
       30
     );
+
+  if(input.actorIsBot){
+    // Other moderation/security bots can legitimately perform many kicks or
+    // bans during a raid. Never kick another bot solely for moderation volume.
+    // Structural destruction is qualitatively different: repeated channel or
+    // role deletion remains strong evidence that the bot itself is hostile or
+    // compromised, so automatic bot removal stays enabled for that case.
+    const structuralAction=
+      input.action==="channel_delete" ||
+      input.action==="role_delete";
+    return structuralAction && (extremeSingleClass||extremeMixed);
+  }
+
   return extremeSingleClass||extremeMixed;
 }
 
@@ -1009,7 +1023,8 @@ export class SecurityEngine {
         thresholdValue,
         crossActionScore:profile.score,
         crossActionThreshold:settings.thresholds.crossActionScore,
-        destructiveKinds:profile.destructiveKinds
+        destructiveKinds:profile.destructiveKinds,
+        actorIsBot:actorBotState.isBot
       });
     await this.trigger(guildId, actorId, settings, spec, {
       auditEntryId: entry.id,
