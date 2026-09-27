@@ -519,7 +519,7 @@ export default {
       return json({
         ok: true,
         service: "discord-security",
-        version: "bot-coexistence-v71",
+        version: "bot-coexistence-v72",
         gateway: {
           connected: status.connected,
           lastHeartbeatAck: status.lastHeartbeatAck,
