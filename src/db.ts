@@ -313,7 +313,8 @@ const DASHBOARD_EDIT_ACTIONS = new Set([
   "role_delete",
   "permission_escalation",
   "automod_change",
-  "guild_update"
+  "guild_update",
+  "member_join"
 ]);
 
 const RESTORE_ACTIONS = new Set([
@@ -365,6 +366,29 @@ export async function hasMaintenanceLease(
     created_at: number;
     expires_at: number;
   }>()).results;
+  return rows.some(row => maintenanceScopeAllows(row.scope, action));
+}
+
+export async function hasGuildMaintenanceLease(
+  env: Env,
+  guildId: string,
+  action: string,
+  actionAtMs = Date.now()
+): Promise<boolean> {
+  await ensureSchema(env);
+  const skewMs = 5_000;
+  const rows = (await env.DB.prepare(`
+    SELECT scope FROM maintenance_leases
+    WHERE guild_id=?
+      AND created_at<=?
+      AND expires_at>=?
+    ORDER BY expires_at DESC
+    LIMIT 10
+  `).bind(
+    guildId,
+    actionAtMs + skewMs,
+    actionAtMs - skewMs
+  ).all<{ scope: MaintenanceScope }>()).results;
   return rows.some(row => maintenanceScopeAllows(row.scope, action));
 }
 
