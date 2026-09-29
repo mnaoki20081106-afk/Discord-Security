@@ -10,6 +10,7 @@ import {
   claimAuditEntry,
   getAuditCursor,
   getSecuritySettings,
+  hasGuildMaintenanceLease,
   hasMaintenanceLease,
   isManagedServiceBot,
   recordIncident
@@ -1052,6 +1053,15 @@ export class SecurityEngine {
     if (event.user.bot) return;
     const settings = await this.settings(event.guild_id);
     if (!settings.enabled || !settings.modules.antiRaid) return;
+
+    // Main Bot opens a short, authenticated restore lease before replaying
+    // OAuth-authorized member joins. Do not interpret those expected joins as
+    // a raid; the exemption is scoped to "restore" and expires automatically.
+    if (await hasGuildMaintenanceLease(
+      this.env,
+      event.guild_id,
+      "member_join"
+    )) return;
 
     const now = Date.now();
     const windowMs = settings.thresholds.raidWindowSeconds * 1000;

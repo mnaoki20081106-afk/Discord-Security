@@ -283,6 +283,11 @@ describe("maintenance lease scope", () => {
     }
   });
 
+  it("allows restore member joins without weakening dashboard edits", () => {
+    expect(maintenanceScopeAllows("restore", "member_join")).toBe(true);
+    expect(maintenanceScopeAllows("dashboard_edit", "member_join")).toBe(false);
+  });
+
   it("does not turn restore into a broad Security bypass", () => {
     for (const action of [
       "channel_delete",
