@@ -313,8 +313,7 @@ const DASHBOARD_EDIT_ACTIONS = new Set([
   "role_delete",
   "permission_escalation",
   "automod_change",
-  "guild_update",
-  "member_join"
+  "guild_update"
 ]);
 
 const RESTORE_ACTIONS = new Set([
@@ -329,7 +328,8 @@ const RESTORE_ACTIONS = new Set([
   "permission_escalation",
   "ban_add",
   "automod_change",
-  "guild_update"
+  "guild_update",
+  "member_join"
 ]);
 
 export function maintenanceScopeAllows(
