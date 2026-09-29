@@ -12,7 +12,7 @@ import {
   shouldAutoSanctionActor,
   shouldSanctionActor
 } from "../src/engine";
-import { OrderedTaskLanes } from "../src/gateway";
+import { DiscordSecurityGateway, OrderedTaskLanes } from "../src/gateway";
 import { applyBridgeSecurityFloor, isConfiguredMainBot, isManualDashboardLockdown } from "../src/index";
 import {
   buildLockdownOverwrites,
@@ -1202,5 +1202,104 @@ describe("Main Bot channel recovery overwrite", () => {
       expect((deny & bit) === 0n).toBe(true);
     }
     expect((allow & 64n) === 64n).toBe(true);
+  });
+});
+
+
+describe("Discord Gateway connection recovery", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function fakeGatewayState() {
+    const values = new Map<string, unknown>();
+    let alarm: number | null = null;
+    return {
+      storage: {
+        get: async (key: string) => values.get(key),
+        put: async (key: string, value: unknown) => {
+          values.set(key, value);
+        },
+        getAlarm: async () => alarm,
+        setAlarm: async (value: number) => {
+          alarm = value;
+        },
+        deleteAlarm: async () => {
+          alarm = null;
+        }
+      },
+      blockConcurrencyWhile: async (work: () => Promise<unknown>) => work()
+    } as never;
+  }
+
+  function fakeSocket() {
+    return {
+      accept: vi.fn(),
+      addEventListener: vi.fn(),
+      close: vi.fn(),
+      send: vi.fn()
+    } as unknown as WebSocket;
+  }
+
+  it("coalesces concurrent start requests into one outbound WebSocket connection", async () => {
+    const socket = fakeSocket();
+    let gatewayUrlCalls = 0;
+    let upgradeCalls = 0;
+
+    vi.stubGlobal("fetch", vi.fn(async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("/api/v10/gateway/bot")) {
+        gatewayUrlCalls += 1;
+        await Promise.resolve();
+        return Response.json({ url: "wss://gateway.discord.gg" });
+      }
+      upgradeCalls += 1;
+      await Promise.resolve();
+      return { status: 101, webSocket: socket } as Response;
+    }));
+
+    const gateway = new DiscordSecurityGateway(
+      fakeGatewayState(),
+      { DISCORD_BOT_TOKEN: "test-token" } as never
+    );
+    const request = () => new Request("https://security-gateway.internal/start", {
+      method: "POST"
+    });
+
+    await Promise.all([
+      gateway.fetch(request()),
+      gateway.fetch(request()),
+      gateway.fetch(request())
+    ]);
+
+    expect(gatewayUrlCalls).toBe(1);
+    expect(upgradeCalls).toBe(1);
+    expect(socket.accept).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts reconnecting when status is requested after in-memory socket state is lost", async () => {
+    const socket = fakeSocket();
+    let upgradeCalls = 0;
+
+    vi.stubGlobal("fetch", vi.fn(async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("/api/v10/gateway/bot")) {
+        return Response.json({ url: "wss://gateway.discord.gg" });
+      }
+      upgradeCalls += 1;
+      return { status: 101, webSocket: socket } as Response;
+    }));
+
+    const gateway = new DiscordSecurityGateway(
+      fakeGatewayState(),
+      { DISCORD_BOT_TOKEN: "test-token" } as never
+    );
+
+    const response = await gateway.fetch(
+      new Request("https://security-gateway.internal/status")
+    );
+    expect(response.ok).toBe(true);
+    expect(upgradeCalls).toBe(1);
+    expect(socket.accept).toHaveBeenCalledTimes(1);
   });
 });

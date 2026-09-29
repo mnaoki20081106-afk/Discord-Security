@@ -147,6 +147,8 @@ export async function gatewayStatus(env: Env): Promise<GatewayStatus> {
 
 export class DiscordSecurityGateway {
   private socket: WebSocket | null = null;
+  private connectPromise: Promise<void> | null = null;
+  private socketOpenedAt: number | null = null;
   private plannedClose = false;
   // Protocol/control frames must never wait behind Discord REST moderation
   // calls. queue handles WebSocket state/heartbeats. Security work is ordered
@@ -161,11 +163,23 @@ export class DiscordSecurityGateway {
     private readonly env: Env
   ) {
     this.engine = new SecurityEngine(env);
+    // Outbound WebSockets cannot use Durable Object WebSocket Hibernation.
+    // Keep a durable wake-up scheduled so a runtime reset can rebuild the
+    // Discord session instead of waiting for the next one-minute cron.
+    this.state.blockConcurrencyWhile(async () => {
+      const alarm = await this.state.storage.getAlarm();
+      if (alarm === null) {
+        await this.state.storage.setAlarm(Date.now() + 1000);
+      }
+    });
   }
 
   async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
     if (path === "/status" && request.method === "GET") {
+      // A health/status request may be the first event after a Durable Object
+      // restart. Start recovery immediately instead of only reporting offline.
+      if (!this.socket) await this.connect();
       const stored = await this.loadState();
       return Response.json({
         connected: Boolean(this.socket) && stored.connected,
@@ -180,7 +194,7 @@ export class DiscordSecurityGateway {
       return new Response("Method Not Allowed", { status: 405 });
     }
     if (path === "/start") {
-      if (!this.socket) await this.connect();
+      await this.connect();
       return Response.json({ ok: true });
     }
     if (path === "/stop") {
@@ -211,6 +225,14 @@ export class DiscordSecurityGateway {
       }
       const stored = await this.loadState();
       if (!stored.heartbeatInterval) {
+        if (
+          this.socketOpenedAt !== null &&
+          Date.now() - this.socketOpenedAt >= 20_000
+        ) {
+          console.warn("security gateway handshake timed out; reconnecting");
+          await this.scheduleReconnect(false, 1000);
+          return;
+        }
         await this.state.storage.setAlarm(Date.now() + 5000);
         return;
       }
@@ -258,6 +280,22 @@ export class DiscordSecurityGateway {
 
   private async connect(): Promise<void> {
     if (this.socket) return;
+    if (this.connectPromise) {
+      await this.connectPromise;
+      return;
+    }
+
+    const attempt = this.connectOnce();
+    this.connectPromise = attempt;
+    try {
+      await attempt;
+    } finally {
+      if (this.connectPromise === attempt) this.connectPromise = null;
+    }
+  }
+
+  private async connectOnce(): Promise<void> {
+    if (this.socket) return;
     const stored = await this.loadState();
     const resumable =
       Boolean(stored.sessionId) &&
@@ -293,6 +331,7 @@ export class DiscordSecurityGateway {
     const socket = response.webSocket;
     socket.accept();
     this.socket = socket;
+    this.socketOpenedAt = Date.now();
     this.plannedClose = false;
 
     socket.addEventListener("message", event => {
@@ -305,6 +344,7 @@ export class DiscordSecurityGateway {
     socket.addEventListener("close", event => {
       if (this.socket !== socket) return;
       this.socket = null;
+      this.socketOpenedAt = null;
       if (this.plannedClose) {
         this.plannedClose = false;
         return;
@@ -318,6 +358,7 @@ export class DiscordSecurityGateway {
     socket.addEventListener("error", () => {
       if (this.socket !== socket) return;
       this.socket = null;
+      this.socketOpenedAt = null;
       if (!this.plannedClose) void this.scheduleReconnect(false);
     });
 
@@ -334,6 +375,7 @@ export class DiscordSecurityGateway {
         // already closed
       }
       this.socket = null;
+      this.socketOpenedAt = null;
     }
     await this.state.storage.put(STATE_KEY, emptyState());
   }
@@ -364,6 +406,7 @@ export class DiscordSecurityGateway {
       }
       this.socket = null;
     }
+    this.socketOpenedAt = null;
     const delay =
       forcedDelay ??
       Math.min(60_000, 1000 * 2 ** Math.min(stored.reconnectAttempts, 5));
@@ -393,6 +436,7 @@ export class DiscordSecurityGateway {
         stored.heartbeatInterval = hello.heartbeat_interval;
         stored.lastHeartbeatAck = Date.now();
         stored.lastHeartbeatSent = null;
+        this.socketOpenedAt = null;
         await this.saveState(stored);
         await this.identifyOrResume(stored);
         await this.state.storage.setAlarm(
